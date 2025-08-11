@@ -1,0 +1,17 @@
+targets:
+  amd:
+    host: amdlogin.bsc.es
+    user: hpai
+    ssh_key: /home/ubuntu/.ssh/id_rsa
+    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
+    containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
+    python: python3
+    cluster: amd               # maps to Autolauncher LAUNCHER_WRITERS
+  mn4:
+    host: mn1.bsc.es
+    user: hpai
+    ssh_key: /home/ubuntu/.ssh/id_rsa
+    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
+    containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
+    python: python3
+    cluster: mn4
