@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Body, HTTPException
 from typing import List
 from pydantic import BaseModel
+from fastapi.responses import PlainTextResponse  # NEW
 from autolauncher_adapter import AutolauncherAdapter
 from plugin_state import PluginState
 
@@ -9,7 +10,6 @@ state = PluginState()
 adapter = AutolauncherAdapter(state)
 
 # ----- Schemas (align with interLink plugin schema) -----
-
 class Metadata(BaseModel):
     name: str | None = None
     namespace: str | None = None
@@ -21,7 +21,6 @@ class Container(BaseModel):
     image: str
     command: list[str] | None = None
     args: list[str] | None = []
-    # ... add more later on
 
 class PodSpec(BaseModel):
     containers: List[Container]
@@ -83,7 +82,6 @@ class LogRequest(BaseModel):
     Opts: LogOpts
 
 # ----- Routes -----
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -95,14 +93,14 @@ def create_pod(pods: List[Pod]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/status", response_model=List[PodStatus])
+@app.post("/status", response_model=List[PodStatus])
 def status_pod(pods: List[PodRequest] = Body(...)):
     try:
         return adapter.status(pods)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/getLogs", response_model=str)
+@app.post("/getLogs", response_class=PlainTextResponse)
 def get_logs(req: LogRequest = Body(...)):
     try:
         return adapter.get_logs(req)

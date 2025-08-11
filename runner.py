@@ -62,7 +62,7 @@ class HPCRunner:
       - reads targets from PLUGIN_TARGETS_FILE (YAML)
       - SSHes to the login node
       - creates a per-job workdir
-      - uploads vendor/autolauncher/autolauncher.py and a config.json
+      - uploads autolauncher.py and a config.json
       - runs:  python autolauncher.py --cluster ... --file ... --workdir ... --containerdir ...
       - parses "Submitted batch job <id>"
       - status via squeue/sacct
@@ -73,10 +73,28 @@ class HPCRunner:
     def __init__(self, target: str = "amd"):
         self.target_name = target
         self.targets_file = os.getenv("PLUGIN_TARGETS_FILE", "/etc/interlink-autolauncher-plugin/targets.yml")
-        self.autolauncher_local = os.getenv(
-            "AUTOLAUNCHER_LOCAL_PATH",
-            os.path.join(os.getcwd(), "vendor", "autolauncher", "autolauncher.py"),
-        )
+
+        # Locate autolauncher.py robustly without changing any scripts:
+        # 1) AUTOLAUNCHER_LOCAL_PATH (from systemd unit)
+        # 2) ./vendor/autolauncher/autolauncher.py
+        # 3) ./autolauncher/autolauncher.py  (your repo layout)
+        configured = os.getenv("AUTOLAUNCHER_LOCAL_PATH")
+        default_vendor = os.path.join(os.getcwd(), "vendor", "autolauncher", "autolauncher.py")
+        default_toplvl = os.path.join(os.getcwd(), "autolauncher", "autolauncher.py")
+
+        candidates = [p for p in [configured, default_vendor, default_toplvl] if p]
+        self.autolauncher_local = None
+        for c in candidates:
+            if os.path.exists(c):
+                self.autolauncher_local = c
+                break
+        if not self.autolauncher_local:
+            raise RuntimeError(
+                "autolauncher.py not found. Tried: "
+                + ", ".join(candidates)
+                + ". Set AUTOLAUNCHER_LOCAL_PATH or add the file."
+            )
+
         with open(self.targets_file, "r") as f:
             cfg = yaml.safe_load(f) or {}
         self.target = (cfg.get("targets") or {}).get(target)
