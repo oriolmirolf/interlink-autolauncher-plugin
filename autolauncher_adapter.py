@@ -1,7 +1,7 @@
 import os, json, time
 from typing import List
 from plugin_state import PluginState
-from autolauncher import LocalRunner, HPCRunner
+from runner import LocalRunner, HPCRunner
 from utils import gen_podjid
 
 class AutolauncherAdapter:
@@ -78,19 +78,15 @@ class AutolauncherAdapter:
                 })
             else:
                 runner = HPCRunner(target=target)
-                jid = runner.launch_hpc(uid=uid, namespace=namespace, image=image, command=command, args=args)
-                self.state.upsert(uid, {
-                    "name"          : meta.name or uid,
-                    "namespace"     : namespace,
-                    "mode"          : "hpc",
-                    "target"        : target,
-                    "image"         : image,
-                    "jid"           : jid,
-                    "created_at"    : time.time(),
-                    "status"        : "Pending",
-                    "container_name": container.name,
-                    "log_cursor"    : 0,
-                })
+                annotations = pod.metadata.annotations or {}
+                jid = runner.launch_hpc(
+                    uid=uid,
+                    namespace=namespace,
+                    image=image,
+                    command=command,
+                    args=args,
+                    annotations=annotations,
+                )
 
             results.append({"PodUID": uid, "PodJID": jid})
         return results
