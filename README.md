@@ -1,42 +1,48 @@
-# interlink-autolauncher-plugin
+# interlink-autolauncher-deploy
 
-InterLink sidecar plugin that adapts `/create`, `/status`, `/getLogs`, `/delete` into **Autolauncher** actions.
-Supports:
-- **local** mode (runs containers via Docker; great for CI/smoke)
-- **hpc** mode (stubs provided; wire to your SSH/SLURM site)
+One-command setup for:
+- **Autolauncher VM**: run the Interlink Autolauncher Plugin (FastAPI/uvicorn) as a `systemd` service.
+- **K8s worker**: expose the plugin to Interlink via a UNIX socket bridge using `socat`.
 
-## Endpoints
-- `GET  /health` → `{status:"ok"}`
-- `POST /create`  → `[{"PodUID":"...","PodJID":"..."}]`
-- `GET  /status`  (JSON body) → `[PodStatus]`
-- `GET  /getLogs` (JSON body) → `text/plain`
-- `POST /delete`  → `"OK"`
+## Prereqs
 
-## Run (host, with venv)
+**Autolauncher VM**
+- Ubuntu 22.04+ (or 24.04)
+- Git, Python 3.10+ (3.12 ok), venv
+- Your plugin repo already cloned at `~/interlink-autolauncher-plugin`
+  (it must contain `main.py`, `requirements.txt`, etc.)
+
+**Worker VM**
+- Ubuntu 22.04+ (or 24.04), `socat` package
+
+## Quick start
+
+### 1) Autolauncher VM
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-export PLUGIN_MODE=local
-uvicorn main:app --host 0.0.0.0 --port 8001
-```
+# on the autolauncher VM
+cd scripts/autolauncher
+./setup-plugin-host.sh
+./status-plugin-host.sh
+# health check
+curl -sSf http://127.0.0.1:8001/health
+````
 
-## Run (systemd)
+### 2) Worker VM
+
 ```bash
-sudo ./scripts/install-systemd.sh
-sudo systemctl enable --now interlink-autolauncher-plugin
+# on the worker VM
+cd scripts/worker
+./setup-plugin-bridge.sh 192.168.0.98 8001
+# health check via UNIX socket
+curl -sSf --unix-socket /var/run/interlink/.plugin.sock http://unix/health
 ```
 
-## Run (container)
-Build and run; ensure Docker CLI/daemon accessible or mount `/var/run/docker.sock.`
-```bash 
-docker build -t interlink-autolauncher-plugin:dev .
-docker run --rm -p 8001:8001 \
-  -e PLUGIN_MODE=local \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  interlink-autolauncher-plugin:dev
-```
+### Optional
 
-## Smoke test
-```bash
-./scripts/smoke.sh http://127.0.0.1:8001
-```
+* `./restart-plugin-host.sh`, `./uninstall-plugin-host.sh`
+* `./restart-plugin-bridge.sh`, `./uninstall-plugin-bridge.sh`
+
+## Notes
+
+* The plugin’s on-disk state lives in `/var/lib/interlink-autolauncher-plugin` (created & chowned).
+* The worker bridge creates `/var/run/interlink/.plugin.sock` (mode 666) so the Interlink pod can reach it.
