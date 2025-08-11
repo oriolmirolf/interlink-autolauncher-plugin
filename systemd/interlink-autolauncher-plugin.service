@@ -1,0 +1,16 @@
+[Unit]
+Description=Interlink Autolauncher Plugin (host Python)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/interlink-autolauncher-plugin
+Environment=PLUGIN_MODE=local
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/interlink-autolauncher-plugin/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
