@@ -287,3 +287,97 @@ class HPCRunner:
             self._ssh(c, f"scancel {shlex.quote(jid)} || true")
         finally:
             c.close()
+
+    def _connect(self) -> paramiko.SSHClient:
+        """
+        Auth modes:
+        - auth: "key"       -> require ssh_key (optionally ssh_key_pass_env)
+        - auth: "password"  -> use password_env/password_file/password
+        - auth: "auto" or missing:
+                try key if present; on failure or missing, try password.
+        """
+        c = paramiko.SSHClient()
+        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        hostname = self.target["host"]
+        username = self.target["user"]
+        auth_mode = (self.target.get("auth") or "auto").lower()
+
+        # Common connect args
+        base_kwargs = dict(
+            hostname=hostname,
+            username=username,
+            allow_agent=False,
+            look_for_keys=False,
+            timeout=20,
+            banner_timeout=20,
+            auth_timeout=20,
+        )
+
+        def try_key():
+            keyfile = self.target.get("ssh_key")
+            if not keyfile:
+                return False
+            pass_env = self.target.get("ssh_key_pass_env")
+            kwargs = dict(base_kwargs)
+            kwargs["key_filename"] = keyfile
+            if pass_env and os.environ.get(pass_env):
+                # cos paramiko uses passphrase
+                kwargs["passphrase"] = os.environ[pass_env]
+            c.connect(**kwargs)
+            return True
+
+        def try_password():
+            pw = self._get_password(self.target)
+            if not pw:
+                return False
+            kwargs = dict(base_kwargs)
+            kwargs["password"] = pw
+            try:
+                c.connect(**kwargs)
+            except paramiko.ssh_exception.AuthenticationException:
+                t = paramiko.Transport((hostname, 22))
+                t.connect(username=username, password=pw)
+                c._transport = t
+            return True
+
+        # --- explicit modes ---
+        if auth_mode == "key":
+            if not try_key():
+                raise RuntimeError(f"Target '{self.target_name}': ssh_key required for auth=key.")
+            return c
+
+        if auth_mode == "password":
+            if not try_password():
+                raise RuntimeError(f"Target '{self.target_name}': no usable password (password_env/password_file/password).")
+            return c
+
+        # auto: try key, if fails then password
+        try:
+            if try_key():
+                return c
+        except Exception:
+            pass
+        if try_password():
+            return c
+
+        raise RuntimeError(
+            f"Target '{self.target_name}': no working auth. "
+            f"Provide ssh_key (and optional ssh_key_pass_env) or password_env/password_file/password."
+        )
+
+    @staticmethod
+    def _get_password(t: dict) -> str | None:
+        if t.get("password_env"):
+            v = os.environ.get(t["password_env"])
+            if v:
+                return v
+        if t.get("password_file"):
+            try:
+                with open(t["password_file"], "r") as f:
+                    return f.read().strip()
+            except Exception:
+                return None
+        if t.get("password"):
+            return t["password"]
+        return None

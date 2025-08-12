@@ -1,26 +1,27 @@
-from fastapi import FastAPI, Body, HTTPException
-from typing import List
+from fastapi import FastAPI, Body, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from fastapi.responses import PlainTextResponse  # NEW
+from typing import List
+
 from autolauncher_adapter import AutolauncherAdapter
 from plugin_state import PluginState
+
 
 app = FastAPI()
 state = PluginState()
 adapter = AutolauncherAdapter(state)
 
-# ----- Schemas (align with interLink plugin schema) -----
 class Metadata(BaseModel):
     name: str | None = None
     namespace: str | None = None
     uid: str | None = None
-    annotations: dict[str, str] | None = {}
+    annotations: dict[str, str] | None = None
 
 class Container(BaseModel):
     name: str
     image: str
     command: list[str] | None = None
-    args: list[str] | None = []
+    args: list[str] | None = None
 
 class PodSpec(BaseModel):
     containers: List[Container]
@@ -72,7 +73,7 @@ class LogOpts(BaseModel):
     Tail: int | None = None
     LimitBytes: int | None = None
     Timestamps: bool | None = None
-    Previous: bool
+    Previous: bool = False
 
 class LogRequest(BaseModel):
     Namespace: str
@@ -81,29 +82,21 @@ class LogRequest(BaseModel):
     ContainerName: str
     Opts: LogOpts
 
-# ----- Routes -----
-@app.get("/health")
-def health():
-    return {"status": "ok"}
 
+# ----- Helpers -----
+def _uids_from_query(uid_param: List[str]) -> List[str]:
+    """Support ?uid=a&uid=b and ?uid=a,b forms."""
+    out: List[str] = []
+    for u in uid_param:
+        out.extend([p.strip() for p in u.split(",") if p.strip()])
+    return out
+
+
+# ----- Routes required by the guide -----
 @app.post("/create", response_model=List[CreateStruct])
 def create_pod(pods: List[Pod]):
     try:
         return adapter.create(pods)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/status", response_model=List[PodStatus])
-def status_pod(pods: List[PodRequest] = Body(...)):
-    try:
-        return adapter.status(pods)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/getLogs", response_class=PlainTextResponse)
-def get_logs(req: LogRequest = Body(...)):
-    try:
-        return adapter.get_logs(req)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -114,3 +107,53 @@ def delete_pod(pod: PodRequest):
         return "OK"
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/status", response_model=List[PodStatus])
+def status_pod_get(uid: List[str] = Query(..., description="Repeat ?uid=x&uid=y or CSV ?uid=x,y")):
+    try:
+        uids = _uids_from_query(uid)
+        # Adapter only needs UID; other fields are recovered from state.
+        pods_minimal = [PodRequest(metadata=Metadata(uid=u), spec=PodSpec(containers=[])) for u in uids]
+        return adapter.status(pods_minimal)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/getLogs", response_class=PlainTextResponse)
+def get_logs_get(
+    uid: str = Query(..., description="Pod UID"),
+    containerName: str | None = Query(None),
+    tail: int | None = Query(None),
+    timestamps: bool = Query(False),
+    previous: bool = Query(False),
+    limitBytes: int | None = Query(None),
+    namespace: str | None = Query(None),
+    podName: str | None = Query(None),
+):
+    try:
+        info = state.get(uid) or {}
+        req = LogRequest(
+            Namespace=namespace or info.get("namespace", "default"),
+            PodUID=uid,
+            PodName=podName or info.get("name", ""),
+            ContainerName=containerName or info.get("container_name", ""),
+            Opts=LogOpts(
+                Tail=tail,
+                LimitBytes=limitBytes,
+                Timestamps=timestamps,
+                Previous=previous,
+            ),
+        )
+        return adapter.get_logs(req)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ----- Extras -----
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
