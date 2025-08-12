@@ -6,8 +6,10 @@ from typing import List
 from autolauncher_adapter import AutolauncherAdapter
 from plugin_state import PluginState
 
+import logging, traceback
+log = logging.getLogger("autolauncher")
 
-app = FastAPI()
+app = FastAPI(debug=True)
 state = PluginState()
 adapter = AutolauncherAdapter(state)
 
@@ -98,6 +100,8 @@ def create_pod(pods: List[Pod]):
     try:
         return adapter.create(pods)
     except Exception as e:
+        logging.getLogger("autolauncher").error("Create failed", exc_info=True)
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/delete", response_model=str)

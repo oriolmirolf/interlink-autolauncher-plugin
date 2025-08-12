@@ -1,4 +1,5 @@
 targets:
+  # Example SSH-key target (kept for reference)
   amd:
     host: amdlogin.bsc.es
     user: hpai
@@ -6,8 +7,9 @@ targets:
     workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
     containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
     python: python3
-    cluster: amd               # maps to Autolauncher LAUNCHER_WRITERS
+    cluster: amd
 
+  # Example SSH-key target (kept for reference)
   mn4:
     host: mn1.bsc.es
     user: hpai
@@ -17,18 +19,13 @@ targets:
     python: python3
     cluster: mn4
 
-  # New: MN5 Accelerated (password-auth example for testing)
+  # MN5 Accelerated — password-auth (for testing)
   mn5_acc_pw:
     host: alogin1.bsc.es
-    # prefer to supply the username via environment for tests:
-    user_env: MN5_ACC_USERNAME
-    # or hardcode instead of user_env:
-    # user: bsc123456
     auth: password
-    password_env: MN5_ACC_PASSWORD
+    user_env: MN5_ACC_USERNAME        # username comes from env var
+    password_env: MN5_ACC_PASSWORD    # password comes from env var
     workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
     containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
     python: python3
-    # Use the autolauncher profile your site supports (mn4 or amd).
-    # If MN5 ACC uses ROCm modules, 'amd' may be appropriate; otherwise 'mn4'.
-    cluster: mn4
+    cluster: mn4                      # or amd, depending on your autolauncher profile
