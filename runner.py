@@ -1,7 +1,6 @@
-import os, json, time, shlex, re, io, posixpath
+import os, json, shlex, re, posixpath
 import yaml
 import paramiko
-from paramiko.ssh_exception import AuthenticationException
 from utils import run, now_rfc3339
 
 
@@ -34,7 +33,6 @@ class LocalRunner:
             return {"phase": "Failed", "reason": "NotFound"}
         st = json.loads(r.stdout.strip())
         if st.get("Running"):
-            # StartedAt may be empty for very fresh containers; guard it
             started = st.get("StartedAt") or now_rfc3339()
             return {"phase": "Running", "startedAt": started}
         if st.get("Status") == "exited" and int(st.get("ExitCode", 1)) == 0:
@@ -47,7 +45,6 @@ class LocalRunner:
             cmd += ["--tail", str(tail)]
         if timestamps:
             cmd += ["--timestamps"]
-        # docker has --since/--until etc; keep simple
         cmd += [jid]
         r = run(cmd, check=False)
         return r.stdout
@@ -71,23 +68,17 @@ class HPCRunner:
       - logs via tail on output/*_<id>_out.txt (fallback: slurm_output/out.txt)
       - delete via scancel
 
-    Auth modes (per-target in targets.yml):
-      - auth: "key"       -> use ssh_key (and optional ssh_key_pass_env)
-      - auth: "password"  -> use password_env / password_file / password
-      - auth: "auto"      -> try key first, then password
-    Username resolution:
-      - user_env: <ENV_VAR_NAME> (preferred for tests)
-      - user:     static username
+    Supports two auth modes (per-target):
+      - SSH key (default): set 'ssh_key' path in targets.yml
+      - Password: set 'auth: password', plus 'user_env'/'user' and 'password_env' in targets.yml.
+        The actual username/password must be present in the plugin service environment.
     """
 
     def __init__(self, target: str = "amd"):
         self.target_name = target
         self.targets_file = os.getenv("PLUGIN_TARGETS_FILE", "/etc/interlink-autolauncher-plugin/targets.yml")
 
-        # Locate autolauncher.py robustly without changing any scripts:
-        # 1) AUTOLAUNCHER_LOCAL_PATH (from systemd unit)
-        # 2) ./vendor/autolauncher/autolauncher.py
-        # 3) ./autolauncher/autolauncher.py  (your repo layout)
+        # Locate autolauncher.py robustly:
         configured = os.getenv("AUTOLAUNCHER_LOCAL_PATH")
         default_vendor = os.path.join(os.getcwd(), "vendor", "autolauncher", "autolauncher.py")
         default_toplvl = os.path.join(os.getcwd(), "autolauncher", "autolauncher.py")
@@ -95,7 +86,7 @@ class HPCRunner:
         candidates = [p for p in [configured, default_vendor, default_toplvl] if p]
         self.autolauncher_local = None
         for c in candidates:
-            if os.path.exists(c):
+            if c and os.path.exists(c):
                 self.autolauncher_local = c
                 break
         if not self.autolauncher_local:
@@ -111,97 +102,54 @@ class HPCRunner:
         if not self.target:
             raise RuntimeError(f"Unknown HPC target '{target}'. Available: {list((cfg.get('targets') or {}).keys())}")
 
-    # ---------- username resolution ----------
-    def _resolve_user(self) -> str:
-        ue = (self.target.get("user_env") or "").strip()
-        if ue:
-            v = os.environ.get(ue, "").strip()
-            if v:
-                return v
-        u = (self.target.get("user") or "").strip()
-        if not u:
-            raise RuntimeError(
-                f"Target '{self.target_name}': no SSH username found. "
-                f"Set 'user' or provide 'user_env'."
-            )
-        return u
-
     # ---------- SSH helpers ----------
+    def _resolve_user(self) -> str:
+        """Username can come from targets.yml 'user' or from env var named in 'user_env'."""
+        env_key = self.target.get("user_env")
+        if env_key:
+            val = os.environ.get(env_key)
+            if val:
+                return val
+        user = self.target.get("user")
+        if not user:
+            raise RuntimeError("No username found. Set 'user' or 'user_env' in targets.yml.")
+        return user
+
     def _connect(self) -> paramiko.SSHClient:
-        host = self.target["host"]
-        port = int(self.target.get("port", 22))
+        """
+        Support:
+          - SSH key auth (default): requires 'ssh_key'
+          - Password auth: requires 'user_env' or 'user' and 'password_env'; values must be in env
+        """
+        c = paramiko.SSHClient()
+        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
         user = self._resolve_user()
+        auth_mode = (self.target.get("auth") or "ssh-key").lower()
+        kwargs = dict(
+            hostname=self.target["host"],
+            username=user,
+            look_for_keys=False,
+            allow_agent=False,
+            timeout=20,
+        )
 
-        auth_mode = (self.target.get("auth") or "key").lower()  # key | password | auto
-        keyfile = self.target.get("ssh_key")
-        key_pass_env = self.target.get("ssh_key_pass_env")
-        key_pass = os.environ.get(key_pass_env) if key_pass_env else None
-
-        pw_env = self.target.get("password_env")
-        pw_file = self.target.get("password_file")
-        pw_literal = self.target.get("password")
-        password = None
-        if pw_env and os.environ.get(pw_env):
-            password = os.environ.get(pw_env)
-        elif pw_file and os.path.exists(pw_file):
-            try:
-                with open(pw_file, "r") as f:
-                    password = f.read().strip()
-            except Exception:
-                password = None
-        elif pw_literal:
-            password = pw_literal
-
-        cli = paramiko.SSHClient()
-        cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        def connect_key():
-            if not keyfile:
-                raise RuntimeError("ssh_key required for key authentication.")
-            cli.connect(
-                hostname=host,
-                port=port,
-                username=user,
-                key_filename=keyfile,
-                passphrase=key_pass,
-                look_for_keys=False,
-                allow_agent=False,
-                timeout=20,
-                banner_timeout=20,
-                auth_timeout=20,
-            )
-
-        def connect_pw():
-            if not password:
-                raise RuntimeError(
-                    "Password auth selected but no password found. "
-                    "Provide password_env / password_file / password."
-                )
-            cli.connect(
-                hostname=host,
-                port=port,
-                username=user,
-                password=password,
-                look_for_keys=False,
-                allow_agent=False,
-                timeout=20,
-                banner_timeout=20,
-                auth_timeout=20,
-            )
-
-        if auth_mode == "key":
-            connect_key()
-        elif auth_mode == "password":
-            connect_pw()
-        elif auth_mode == "auto":
-            try:
-                connect_key()
-            except Exception:
-                connect_pw()
+        if auth_mode == "password":
+            pw_env = self.target.get("password_env")
+            if not pw_env:
+                raise RuntimeError("password_env is required for auth=password")
+            pw_val = os.environ.get(pw_env)
+            if not pw_val:
+                raise RuntimeError(f"Environment variable '{pw_env}' is empty or not set")
+            kwargs["password"] = pw_val
         else:
-            raise RuntimeError(f"Unknown auth mode '{auth_mode}' (expected key|password|auto)")
+            key_path = self.target.get("ssh_key")
+            if not key_path:
+                raise RuntimeError("ssh_key is required for auth=ssh-key")
+            kwargs["key_filename"] = key_path
 
-        return cli
+        c.connect(**kwargs)
+        return c
 
     @staticmethod
     def _sftp_mkdirs(sftp: paramiko.SFTPClient, path: str):
@@ -227,7 +175,7 @@ class HPCRunner:
     def _shell_from_k8s(command: list[str] | None, args: list[str] | None) -> tuple[str, str, str]:
         """
         Map K8s container command/args -> autolauncher (binary, command, args).
-        We use /bin/bash -lc "<joined shell>" to preserve semantics.
+        We use /bin/bash -lc "<joined shell>" to preserve typical pod semantics.
         """
         pieces: list[str] = []
         if command:
@@ -259,7 +207,7 @@ class HPCRunner:
 
         config = {
             # Autolauncher params:
-            "cluster": self.target["cluster"],      # e.g., amd | mn4
+            "cluster": self.target["cluster"],      # e.g., amd | mn4 (as supported by autolauncher.py)
             "workdir": job_dir,
             "containerdir": containerdir,
             "qos": qos,
@@ -273,12 +221,12 @@ class HPCRunner:
             "use_code_in_gpfs": True,
         }
 
-        # ship files and run
         c = self._connect()
         try:
             sftp = c.open_sftp()
             try:
                 self._sftp_mkdirs(sftp, config_dir)
+                self._sftp_mkdirs(sftp, output_dir)
             finally:
                 pass
 
@@ -291,23 +239,18 @@ class HPCRunner:
             with sftp.file(posixpath.join(config_dir, "config.json"), "w") as rf:
                 rf.write(cfg_bytes.decode())
 
-            # ensure output dir exists (autolauncher will do it too; harmless)
-            self._sftp_mkdirs(sftp, output_dir)
             sftp.close()
 
             # launch
             py = self.target.get("python", "python3")
-            cmd = (
-                f'{py} autolauncher.py --cluster {shlex.quote(self.target["cluster"])} '
-                f'--file {shlex.quote(posixpath.join(config_dir,"config.json"))} '
-                f'--workdir {shlex.quote(job_dir)} '
-                f'--containerdir {shlex.quote(containerdir)}'
-            )
+            cmd = f'{py} autolauncher.py --cluster {shlex.quote(self.target["cluster"])} ' \
+                  f'--file {shlex.quote(posixpath.join(config_dir, "config.json"))} ' \
+                  f'--workdir {shlex.quote(job_dir)} ' \
+                  f'--containerdir {shlex.quote(containerdir)}'
             rc, out, err = self._ssh(c, cmd, cwd=job_dir)
             combined = out + "\n" + err
             m = re.search(r"Submitted batch job\s+(\d+)", combined)
             if not m:
-                # When cluster=local it might not print the sbatch line (shouldn’t happen here)
                 raise RuntimeError(f"Could not parse SLURM JobId. Output:\n{combined}")
             jid = m.group(1).strip()
             return jid
@@ -317,7 +260,6 @@ class HPCRunner:
     def status_hpc(self, jid: str) -> dict:
         c = self._connect()
         try:
-            # Prefer squeue; if absent, fall back to sacct
             rc, out, _ = self._ssh(c, f'squeue -h -j {shlex.quote(jid)} -o "%T" || true')
             state = (out.strip().splitlines() or [""])[0].upper()
             if state:
@@ -339,14 +281,12 @@ class HPCRunner:
                     out["startedAt"] = now_rfc3339()
                 return out
 
-            # not in squeue -> finished; check sacct
             rc, out, _ = self._ssh(c, f'sacct -n -j {shlex.quote(jid)} --format=State%20 | head -n1 || true')
             sacct_state = (out.strip() or "").upper()
             if "COMPLETED" in sacct_state:
                 return {"phase": "Succeeded"}
             if sacct_state:
                 return {"phase": "Failed", "reason": sacct_state}
-            # best effort
             return {"phase": "Failed", "reason": "Unknown"}
         finally:
             c.close()
@@ -355,12 +295,10 @@ class HPCRunner:
         n = tail or 200
         c = self._connect()
         try:
-            # Prefer autolauncher default output files containing _<jid>_
             cmd = f'''
                 set -e
                 f=$(ls -1 {self.target["workdir_base"]}/*/output/*_{shlex.quote(jid)}_out.txt 2>/dev/null | tail -n1) || true
                 if [ -n "$f" ]; then tail -n {n} "$f"; exit 0; fi
-                # fallback used in some templates
                 g=$(ls -1 {self.target["workdir_base"]}/*/slurm_output/* 2>/dev/null | tail -n1) || true
                 if [ -n "$g" ]; then tail -n {n} "$g"; exit 0; fi
                 echo "No logs found yet for Job {jid}."

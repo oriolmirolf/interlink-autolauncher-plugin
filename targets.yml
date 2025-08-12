@@ -1,33 +1,34 @@
-# /etc/interlink-autolauncher-plugin/targets.yml
 targets:
   amd:
     host: amdlogin.bsc.es
     user: hpai
     ssh_key: /home/ubuntu/.ssh/id_rsa
-    auth: key
     workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
     containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
     python: python3
-    cluster: amd
+    cluster: amd               # maps to Autolauncher LAUNCHER_WRITERS
 
   mn4:
     host: mn1.bsc.es
     user: hpai
     ssh_key: /home/ubuntu/.ssh/id_rsa
-    auth: key
     workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
     containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
     python: python3
     cluster: mn4
 
-  # NEW: MN5 (Accelerated) via username + password (for testing)
+  # New: MN5 Accelerated (password-auth example for testing)
   mn5_acc_pw:
-    host: alogin1.bsc.es              # adjust if needed
-    user_env: MN5_ACC_USERNAME        # comes from secrets.env
+    host: alogin1.bsc.es
+    # prefer to supply the username via environment for tests:
+    user_env: MN5_ACC_USERNAME
+    # or hardcode instead of user_env:
+    # user: bsc123456
     auth: password
-    password_env: MN5_ACC_PASSWORD    # comes from secrets.env
-    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs   # adjust to your MN5 path
+    password_env: MN5_ACC_PASSWORD
+    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
     containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
     python: python3
-    # Pick a launcher profile your autolauncher.py supports; 'mn4' is the safe, CPU-ish default
+    # Use the autolauncher profile your site supports (mn4 or amd).
+    # If MN5 ACC uses ROCm modules, 'amd' may be appropriate; otherwise 'mn4'.
     cluster: mn4

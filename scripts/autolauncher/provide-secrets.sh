@@ -21,19 +21,15 @@ Options (all optional; you can provide any subset):
   --restart                      Restart the plugin after writing secrets (default)
   --no-restart                   Do not restart; just write files
   -h, --help
-
-Examples:
-  $(basename "$0") --mn5-acc-user alice --mn5-acc-password 's3cr3t'
-  $(basename "$0") --cesga-user bob --cesga-password 'pw'
 EOF
 }
 
 RESTART=1
-MN5_USER=""
-MN5_PW=""
-MN5_KEY_PP=""
-CESGA_USER=""
-CESGA_PW=""
+MN5_USER="${MN5_USER:-}"
+MN5_PW="${MN5_PW:-}"
+MN5_KEY_PP="${MN5_KEY_PP:-}"
+CESGA_USER="${CESGA_USER:-}"
+CESGA_PW="${CESGA_PW:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -50,28 +46,27 @@ while [[ $# -gt 0 ]]; do
   shift || true
 done
 
-prompt_secret() {
-  local varname="$1" prompt="$2" silent="${3:-0}"
-  local -n ref="$varname"
-  if [[ -z "${ref}" ]]; then
-    if [[ "$silent" == "1" ]]; then
-      read -r -s -p "${prompt}: " ref; echo
-    else
-      read -r -p "${prompt}: " ref
-    fi
+prompt_value() { # name, prompt, silent(0/1)
+  local __name="$1" __prompt="$2" __silent="${3:-0}" __tmp=""
+  if [[ "$__silent" == "1" ]]; then
+    read -r -s -p "${__prompt}: " __tmp; echo
+  else
+    read -r -p "${__prompt}: " __tmp
   fi
+  printf -v "$__name" '%s' "$__tmp"
 }
 
-# Ask interactively only if missing
-[[ -n "${MN5_USER}"  ]] || prompt_secret MN5_USER  "Enter MN5 ACC username (blank to skip)"
-[[ -n "${MN5_PW}"    ]] || prompt_secret MN5_PW    "Enter MN5 ACC password (blank to skip)" 1
-[[ -n "${MN5_KEY_PP}" ]]|| prompt_secret MN5_KEY_PP "Enter MN5 SSH key passphrase (blank if none)" 1
-[[ -n "${CESGA_USER}"]] || prompt_secret CESGA_USER "Enter CESGA username (blank to skip)"
-[[ -n "${CESGA_PW}"  ]] || prompt_secret CESGA_PW  "Enter CESGA password (blank to skip)" 1
+# Only prompt if blank
+[[ -n "${MN5_USER}"   ]] || prompt_value MN5_USER   "Enter MN5 ACC username (blank to skip)" 0
+[[ -n "${MN5_PW}"     ]] || prompt_value MN5_PW     "Enter MN5 ACC password (blank to skip)" 1
+[[ -n "${MN5_KEY_PP}" ]] || prompt_value MN5_KEY_PP "Enter MN5 SSH key passphrase (blank if none)" 1
+[[ -n "${CESGA_USER}" ]] || prompt_value CESGA_USER "Enter CESGA username (blank to skip)" 0
+[[ -n "${CESGA_PW}"   ]] || prompt_value CESGA_PW   "Enter CESGA password (blank to skip)" 1
 
 sudo install -d -m 750 "${SECRETS_DIR}"
 sudo install -d -m 755 "${DROPIN_DIR}"
 
+# Ensure the service reads the envfile
 if [[ ! -f "${DROPIN_FILE}" ]]; then
   sudo tee "${DROPIN_FILE}" >/dev/null <<EOF
 [Service]
@@ -79,22 +74,18 @@ EnvironmentFile=-${SECRETS_FILE}
 EOF
 fi
 
-# idempotent upsert
+# Idempotent key=value update (quoted)
 upsert_env() {
   local var="$1" val="$2"
   [[ -n "${val}" ]] || return 0
-  local esc="${val//\'/\''\"'\"'\'}"
+  local esc="${val//\'/\'\"\'\"\'}"
   if [[ -f "${SECRETS_FILE}" ]] && sudo grep -qE "^${var}=" "${SECRETS_FILE}"; then
     sudo sed -i -E "s|^${var}=.*$|${var}='${esc}'|" "${SECRETS_FILE}"
   else
+    sudo install -m 600 /dev/null "${SECRETS_FILE}" 2>/dev/null || true
     sudo bash -c "echo ${var}='${esc}' >> '${SECRETS_FILE}'"
   fi
 }
-
-if [[ ! -f "${SECRETS_FILE}" ]]; then
-  sudo install -m 600 /dev/null "${SECRETS_FILE}"
-fi
-sudo chown root:root "${SECRETS_FILE}"
 
 upsert_env "MN5_ACC_USERNAME"       "${MN5_USER}"
 upsert_env "MN5_ACC_PASSWORD"       "${MN5_PW}"
