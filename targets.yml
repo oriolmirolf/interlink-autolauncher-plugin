@@ -1,35 +1,33 @@
+# /etc/interlink-autolauncher-plugin/targets.yml
 targets:
-  # Production: SSH key (optionally passphrase via env)
-  mn5_acc:
-    host: alogin1.bsc.es
-    user: <your_mn5_user>
+  amd:
+    host: amdlogin.bsc.es
+    user: hpai
+    ssh_key: /home/ubuntu/.ssh/id_rsa
     auth: key
-    ssh_key: /home/ubuntu/.ssh/id_rsa
-    ssh_key_pass_env: MN5_ACC_KEY_PASSPHRASE   # optional
     workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
     containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
     python: python3
     cluster: amd
 
-  # Test: same site but password (for quick checks)
+  mn4:
+    host: mn1.bsc.es
+    user: hpai
+    ssh_key: /home/ubuntu/.ssh/id_rsa
+    auth: key
+    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
+    containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
+    python: python3
+    cluster: mn4
+
+  # NEW: MN5 (Accelerated) via username + password (for testing)
   mn5_acc_pw:
-    host: alogin1.bsc.es
-    user: 
+    host: alogin1.bsc.es              # adjust if needed
+    user_env: MN5_ACC_USERNAME        # comes from secrets.env
     auth: password
-    password_env: MN5_ACC_PASSWORD            # pulled from systemd env file
-    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
+    password_env: MN5_ACC_PASSWORD    # comes from secrets.env
+    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs   # adjust to your MN5 path
     containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
     python: python3
-    cluster: amd
-
-  # Auto mode example: will try key, then password if key fails
-  cesga:
-    host: ft3.cesga.es
-    user: <your_cesga_user>
-    auth: auto
-    ssh_key: /home/ubuntu/.ssh/id_rsa
-    password_env: CESGA_PASSWORD
-    workdir_base: /mnt/lustre/scratch/nlsas/home/res/cns10/SHARE/pipelines/tests/jobs
-    containerdir_base: /mnt/lustre/scratch/nlsas/home/res/cns10/SHARE/pipelines/tests/containers
-    python: python3
+    # Pick a launcher profile your autolauncher.py supports; 'mn4' is the safe, CPU-ish default
     cluster: mn4
