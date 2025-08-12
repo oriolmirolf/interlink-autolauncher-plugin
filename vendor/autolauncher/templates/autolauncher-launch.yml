@@ -1,0 +1,229 @@
+variables:
+    LAUNCH_TARGET_HOSTNAME: amdlogin.bsc.es
+    LAUNCH_TARGET_USERNAME: hpai
+    LAUNCH_TARGET_FOLDER: /gpfs/projects/bsc70/hpai/storage/data/tests/
+    LAUNCH_TARGET_SSH_KEY: some_file
+    LAUNCH_TARGET_SRC_DIR: src/
+    LAUNCH_IMAGE_NAME: ${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}-${CI_COMMIT_REF_NAME}
+    LAUNCH_CONFIG_PATH: configs/config.json
+    KNOWN_HOSTS_FILE: some_file
+    SINGULARITY_VERSION: 3.6.4
+    LAUNCH_VERSION: ${CI_PROJECT_NAME}-${CI_COMMIT_SHORT_SHA}-${CI_COMMIT_REF_NAME}
+    LAUNCH_DESTINATION: ${LAUNCH_TARGET_USERNAME}@${LAUNCH_TARGET_HOSTNAME}
+    JOB_WORKDIR: ${LAUNCH_TARGET_FOLDER}/jobs/${LAUNCH_VERSION}
+    TAGS: estufa # mininostrum, estufa or pepino
+
+
+launch_mn4:
+  image: ci.atalaya.at/containers/docker:stable
+  stage: launch
+  variables:
+    LAUNCH_TARGET_HOSTNAME: mn1.bsc.es
+  script:
+    - 'echo "Target server: ${LAUNCH_TARGET_USERNAME}@${LAUNCH_TARGET_HOSTNAME}"'
+    - 'echo "SSH key path: ${LAUNCH_TARGET_SSH_KEY}"'
+    - time apk add openssh-client rsync
+    - mkdir -p ~/.ssh/
+    - cp ${KNOWN_HOSTS_FILE} ~/.ssh/known_hosts
+    - cp ${LAUNCH_TARGET_SSH_KEY} ~/.ssh/ssh-key
+    - chmod 0600 /root/.ssh/ssh-key
+    - echo "Executing command env CI_PROJECT_PATH_SLUG=$CI_PROJECT_PATH_SLUG CI_COMMIT_SHORT_SHA=$CI_COMMIT_SHORT_SHA CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME} python3 ${JOB_WORKDIR}/autolauncher.py --command ${command} --cluster amd --project ${CI_PROJECT_NAME} --file ${JOB_WORKDIR}/${LAUNCH_CONFIG_PATH} --workdir ${JOB_WORKDIR} --containerdir ${LAUNCH_TARGET_FOLDER}/containers/${LAUNCH_VERSION}/ --commit ${CI_COMMIT_SHORT_SHA} --singularity-version ${SINGULARITY_VERSION}"
+    - ssh -i /root/.ssh/ssh-key ${LAUNCH_DESTINATION} env MINIO_ACCESS_KEY="$MINIO_ACCESS_KEY" MINIO_SECRET_KEY="\"$MINIO_SECRET_KEY_CLEAN\"" CI_PROJECT_PATH_SLUG=$CI_PROJECT_PATH_SLUG CI_COMMIT_SHORT_SHA=$CI_COMMIT_SHORT_SHA CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME} ZIP_KEY=$ZIP_KEY SSEC_KEY=$SSEC_KEY PYTHONPATH=${JOB_WORKDIR}/${LAUNCH_TARGET_SRC_DIR} 
+      python3 ${JOB_WORKDIR}/autolauncher.py --project ${CI_PROJECT_NAME} --file ${JOB_WORKDIR}/${LAUNCH_CONFIG_PATH}
+      --cluster amd --workdir ${JOB_WORKDIR} --containerdir ${LAUNCH_TARGET_FOLDER}/containers/${LAUNCH_VERSION}/ 
+      --commit ${CI_COMMIT_SHORT_SHA} --singularity-version ${SINGULARITY_VERSION} > autolauncher.out
+    - ssh -i /root/.ssh/ssh-key ${LAUNCH_DESTINATION} ls ${JOB_WORKDIR}
+    - 'rm -f /tmp/ssh-key'
+  artifacts:
+    paths:
+      - autolauncher.out
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_MN4.*$/
+    - when: never
+  tags: 
+    - ${TAGS}
+
+launch_amd:
+  image: ci.atalaya.at/containers/docker:stable
+  stage: launch
+  variables:
+    LAUNCH_TARGET_HOSTNAME: amdlogin.bsc.es
+  script:
+    - 'echo "Target server: ${LAUNCH_TARGET_USERNAME}@${LAUNCH_TARGET_HOSTNAME}"'
+    - 'echo "SSH key path: ${LAUNCH_TARGET_SSH_KEY}"'
+    - time apk add openssh-client rsync
+    - mkdir -p ~/.ssh/
+    - cp ${KNOWN_HOSTS_FILE} ~/.ssh/known_hosts
+    - cp ${LAUNCH_TARGET_SSH_KEY} ~/.ssh/ssh-key
+    - chmod 0600 /root/.ssh/ssh-key
+    - echo "Executing command env CI_PROJECT_PATH_SLUG=$CI_PROJECT_PATH_SLUG CI_COMMIT_SHORT_SHA=$CI_COMMIT_SHORT_SHA CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME} python3 ${JOB_WORKDIR}/autolauncher.py --command ${command} --cluster amd --project ${CI_PROJECT_NAME} --file ${JOB_WORKDIR}/${LAUNCH_CONFIG_PATH} --workdir ${JOB_WORKDIR} --containerdir ${LAUNCH_TARGET_FOLDER}/containers/${LAUNCH_VERSION}/ --commit ${CI_COMMIT_SHORT_SHA} --singularity-version ${SINGULARITY_VERSION}"
+    - ssh -i /root/.ssh/ssh-key ${LAUNCH_DESTINATION} env MINIO_ACCESS_KEY="$MINIO_ACCESS_KEY" MINIO_SECRET_KEY="\"$MINIO_SECRET_KEY_CLEAN\"" CI_PROJECT_PATH_SLUG=$CI_PROJECT_PATH_SLUG CI_COMMIT_SHORT_SHA=$CI_COMMIT_SHORT_SHA CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME} ZIP_KEY=$ZIP_KEY SSEC_KEY=$SSEC_KEY PYTHONPATH=${JOB_WORKDIR}/${LAUNCH_TARGET_SRC_DIR} 
+      python3 ${JOB_WORKDIR}/autolauncher.py --project ${CI_PROJECT_NAME} --file ${JOB_WORKDIR}/${LAUNCH_CONFIG_PATH}
+      --cluster amd --workdir ${JOB_WORKDIR} --containerdir ${LAUNCH_TARGET_FOLDER}/containers/${LAUNCH_VERSION}/ 
+      --commit ${CI_COMMIT_SHORT_SHA} --singularity-version ${SINGULARITY_VERSION} > autolauncher.out
+    - ssh -i /root/.ssh/ssh-key ${LAUNCH_DESTINATION} ls ${JOB_WORKDIR}
+    - 'rm -f /tmp/ssh-key'
+  artifacts:
+    paths:
+      - autolauncher.out
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_AMD.*$/
+    - when: never
+  tags: 
+    - ${TAGS}
+
+
+launch_local:
+  image: ci.atalaya.at/containers/docker:stable
+  stage: launch
+  script:
+    - apk add rsync git bash python3
+    - export LAUNCH_IMAGE_NAME=$(env LAUNCH_IMAGE_NAME=${LAUNCH_IMAGE_NAME} bash -c 'echo ${LAUNCH_IMAGE_NAME,,}')
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher  
+    - echo "Executing command env CI_PROJECT_PATH_SLUG=$CI_PROJECT_PATH_SLUG CI_COMMIT_SHORT_SHA=$CI_COMMIT_SHORT_SHA CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME} python3 /tmp/autolauncher/autolauncher.py --command ${command} --cluster local --file ${LAUNCH_CONFIG_PATH}-updated --workdir ${JOB_WORKDIR} -containerdir ci.atalaya.at/${LAUNCH_IMAGE_NAME}" 
+    - env MINIO_ACCESS_KEY="$MINIO_ACCESS_KEY" MINIO_SECRET_KEY="\"$MINIO_SECRET_KEY_CLEAN\"" CI_PROJECT_PATH_SLUG=$CI_PROJECT_PATH_SLUG CI_COMMIT_SHORT_SHA=$CI_COMMIT_SHORT_SHA CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME} ZIP_KEY=$ZIP_KEY SSEC_KEY=$SSEC_KEY 
+      python3 /tmp/autolauncher/autolauncher.py
+      --cluster local --file ${LAUNCH_CONFIG_PATH} --workdir ${JOB_WORKDIR}/
+      --containerdir ci.atalaya.at/${LAUNCH_IMAGE_NAME} > job.pid
+  artifacts:
+    paths:
+      - job.pid
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_LOCAL.*$/
+    - when: never
+  tags: 
+    - ${TAGS}
+
+launch_mn5:
+  id_tokens:
+    CI_JOB_JWT:
+      aud:
+        - https://pass.hpai.bsc.es:18200
+  image: ci.atalaya.at/containers/cesga:0.0.6
+  stage: launch
+  script:
+    - export VAULT_ADDR=https://pass.hpai.bsc.es:18200
+    - export VAULT_TOKEN="$(vault write -field=token auth/jwt/login role=$GITLAB_USER_LOGIN-read-only jwt=$CI_JOB_JWT)"
+    - USER=$(vault kv get --field=MN5_USER secret/gitlab-ci/mn5/${GITLAB_USER_LOGIN})
+    - PASSWORD=$(vault kv get --field=MN5_PASSWORD secret/gitlab-ci/mn5/${GITLAB_USER_LOGIN})
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher
+    - PROJECT_DIR=/gpfs/projects/bsc70/pipelines/${CI_PROJECT_NAME}
+    - JOB_WORKDIR=${PROJECT_DIR}/${CI_COMMIT_SHORT_SHA}
+    - LAUNCH_COMMAND=$(echo ${CI_COMMIT_TITLE} | sed -e 's/.*<\([^]]*\)>.*/\1/g')
+    - echo "[Info] Job directory -> ${JOB_WORKDIR}" && echo "[Info] Launching file -> ${LAUNCH_COMMAND}"
+    - test -f exclude_me.txt || touch exclude_me.txt
+    - cat /tmp/autolauncher/utilities/exclude_me.txt >> exclude_me.txt
+    - EXPORT_VARS=$(printenv | grep -E '^EXPORT_' | awk -F= '{print $1"="$2 }' | tr '\n' ' ' || echo "")
+    - if [[ -n "$EXPORT_VARS" ]]; then EXPORT_VARS="export $EXPORT_VARS && "; fi
+    - sshpass -p ${PASSWORD} ssh -o StrictHostKeyChecking=no  ${USER}@${LAUNCH_TARGET_HOSTNAME} "if [ ! -d ${PROJECT_DIR} ]; then mkdir -p ${PROJECT_DIR} && chmod g+w ${PROJECT_DIR}; fi && mkdir -p ${JOB_WORKDIR}/slurm_output && chmod g+w ${JOB_WORKDIR}"
+    - sshpass -p ${PASSWORD} rsync -avH --exclude-from=exclude_me.txt -e "ssh -o StrictHostKeyChecking=no" ./* ${USER}@${LAUNCH_TARGET_HOSTNAME}:${JOB_WORKDIR}
+    - sshpass -p ${PASSWORD} ssh -o StrictHostKeyChecking=no ${USER}@${LAUNCH_TARGET_HOSTNAME} "$EXPORT_VARS export COMMIT_TAG=${CI_COMMIT_SHORT_SHA} && cd ${JOB_WORKDIR} && ${LAUNCH_COMMAND}" > job.info
+    # Get job id
+    - JOB_ID=$(awk '/Submitted batch job/ {print $NF}' job.info)
+    - if [[ -z "$JOB_ID" ]]; then JOB_ID="ERROR"; fi
+    # Save job information
+    - |
+      cat > job_info.yaml << EOF
+      job_id: ${JOB_ID}
+      commit_id: ${CI_COMMIT_SHORT_SHA}
+      date: $(date '+%Y-%m-%d %H:%M:%S')
+      project: ${CI_PROJECT_NAME}
+      user: ${GITLAB_USER_LOGIN}
+      launch_command: ${LAUNCH_COMMAND}
+      commit_message: ${CI_COMMIT_MESSAGE}
+      EOF
+    - sshpass -p ${PASSWORD} scp -o StrictHostKeyChecking=no job_info.yaml ${USER}@${LAUNCH_TARGET_HOSTNAME}:${JOB_WORKDIR}/
+    - echo "Job information saved to ${JOB_WORKDIR}/job_info.yaml"
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_MN5_GPP.*$/
+      variables: 
+        LAUNCH_TARGET_HOSTNAME: glogin1.bsc.es
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_MN5_ACC.*$/
+      variables: 
+        LAUNCH_TARGET_HOSTNAME: alogin1.bsc.es
+    - when: never
+  artifacts:
+    paths:
+      - job.info
+    expire_in: 1 week
+  tags: 
+    - ${TAGS}
+
+
+launch_cesga:
+  id_tokens:
+    CI_JOB_JWT:
+      aud:
+        - https://pass.hpai.bsc.es:18200
+  image: ci.atalaya.at/containers/cesga:0.0.6
+  stage: launch
+  script:
+    - export VAULT_ADDR=https://pass.hpai.bsc.es:18200
+    - export VAULT_TOKEN="$(vault write -field=token auth/jwt/login role=$GITLAB_USER_LOGIN-read-only jwt=$CI_JOB_JWT)"
+    - CESGA_USER=$(vault kv get --field=CESGA_USER secret/gitlab-ci/cesga/$GITLAB_USER_LOGIN)
+    - CESGA_PASSWORD=$(vault kv get --field=CESGA_PASSWORD secret/gitlab-ci/cesga/${GITLAB_USER_LOGIN})
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher
+    - bash /tmp/autolauncher/utilities/cesga_vpn.sh ${CESGA_USER} ${CESGA_PASSWORD}
+    - PROJECT_DIR=/mnt/lustre/scratch/nlsas/home/res/cns10/SHARE/pipelines/${CI_PROJECT_NAME}
+    - JOB_WORKDIR=$PROJECT_DIR/${CI_COMMIT_SHORT_SHA}
+    - LAUNCH_COMMAND=$(echo ${CI_COMMIT_TITLE} | sed -e 's/.*<\([^]]*\)>.*/\1/g')
+    - echo "[Info] Job directory -> $JOB_WORKDIR" && echo "[Info] Launching file -> ${LAUNCH_COMMAND}"
+    - test -f exclude_me.txt || touch exclude_me.txt
+    - cat /tmp/autolauncher/utilities/exclude_me.txt >> exclude_me.txt
+    - sshpass -p ${CESGA_PASSWORD} ssh -o StrictHostKeyChecking=no  ${CESGA_USER}@ft3.cesga.es "if [ ! -d ${PROJECT_DIR} ]; then mkdir -p ${PROJECT_DIR} && chmod g+w ${PROJECT_DIR}; fi && mkdir -p ${JOB_WORKDIR}/slurm_output && chmod g+w ${JOB_WORKDIR}"
+    - sshpass -p ${CESGA_PASSWORD} rsync -av --exclude-from=exclude_me.txt -e "ssh -o StrictHostKeyChecking=no" * ${CESGA_USER}@ft3.cesga.es:${JOB_WORKDIR}
+    - sshpass -p ${CESGA_PASSWORD} ssh -o StrictHostKeyChecking=no ${CESGA_USER}@ft3.cesga.es "export COMMIT_TAG=${CI_COMMIT_SHORT_SHA} && export USER=${CESGA_USER} && cd ${JOB_WORKDIR} && ${LAUNCH_COMMAND}" > job.info
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_CESGA.*$/
+    - when: never
+  artifacts:
+    paths:
+      - job.info
+    expire_in: 1 week
+  tags: 
+    - cesga
+
+launch_leonardo:
+  id_tokens:
+    CI_JOB_JWT:
+      aud:
+        - https://pass.hpai.bsc.es:18200
+  image: ci.atalaya.at/containers/cesga:0.0.6
+  stage: launch
+  script:
+    - export VAULT_ADDR=https://pass.hpai.bsc.es:18200
+    - export VAULT_TOKEN="$(vault write -field=token auth/jwt/login role=${GITLAB_USER_LOGIN}-read-only jwt=${CI_JOB_JWT})"
+    - LEONARDO_USER=$(vault kv get --field=LEONARDO_USER secret/gitlab-ci/leonardo/${GITLAB_USER_LOGIN})
+    - mkdir ~/.ssh
+    - echo ${KEY} | base64 -d > ~/.ssh/keys && source ~/.ssh/keys
+    - echo ${PUB_KEY} > ~/.ssh/leonardo-key.pub
+    - echo ${PRIV_KEY} | base64 -d > ~/.ssh/leonardo-key
+    - echo ${CERT} > ~/.ssh/leonardo-key-cert.pub
+    - chmod 400 ~/.ssh/leonardo-key*
+    - eval $(ssh-agent)
+    - echo ${PARAPHRASE} | SSH_ASKPASS=/bin/cat setsid -w ssh-add ~/.ssh/leonardo-key
+    - PROJECT_DIR=/leonardo_work/EUHPC_A01_083/pipelines/${CI_PROJECT_NAME}
+    - JOB_WORKDIR=${PROJECT_DIR}/${CI_COMMIT_SHORT_SHA}
+    - LAUNCH_COMMAND=$(echo ${CI_COMMIT_TITLE} | sed -e 's/.*<\([^]]*\)>.*/\1/g')
+    - echo "[Info] Job directory -> ${JOB_WORKDIR}" && echo "[Info] Launching file -> ${LAUNCH_COMMAND}"
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher
+    - test -f exclude_me.txt || touch exclude_me.txt
+    - cat /tmp/autolauncher/utilities/exclude_me.txt >> exclude_me.txt
+    - mv /tmp/autolauncher/utilities/known_hosts ~/.ssh/known_hosts
+    - ssh -o StrictHostKeyChecking=no -i ~/.ssh/leonardo-key ${LEONARDO_USER}@login.leonardo.cineca.it "if [ ! -d ${PROJECT_DIR} ]; then mkdir -p ${PROJECT_DIR} && chmod g+w ${PROJECT_DIR}; fi && mkdir -p ${JOB_WORKDIR}/slurm_output && chmod g+w ${JOB_WORKDIR}"
+    - rsync -av --exclude-from=exclude_me.txt -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/leonardo-key" * ${LEONARDO_USER}@login.leonardo.cineca.it:$JOB_WORKDIR
+    - ssh -o StrictHostKeyChecking=no -i ~/.ssh/leonardo-key ${LEONARDO_USER}@login.leonardo.cineca.it "export COMMIT_TAG=${CI_COMMIT_SHORT_SHA} && cd ${JOB_WORKDIR} && ${LAUNCH_COMMAND}" > job.info
+  rules:
+    - if: $KEY == null && $CI_COMMIT_TITLE =~ /^LAUNCH_LEONARDO.*$/
+      when: manual
+    - if: $KEY != null && $CI_COMMIT_TITLE =~ /^LAUNCH_LEONARDO.*$/
+    - when: never
+  artifacts:
+    paths:
+      - job.info
+    expire_in: 1 week
+  tags: 
+    - ${TAGS}

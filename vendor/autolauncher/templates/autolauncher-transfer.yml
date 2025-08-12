@@ -1,0 +1,66 @@
+variables:
+    LAUNCH_TARGET_HOSTNAME: amdlogin.bsc.es
+    LAUNCH_TARGET_USERNAME: hpai
+    LAUNCH_TARGET_FOLDER: /gpfs/projects/bsc70/hpai/storage/data/tests/
+    LAUNCH_TARGET_SSH_KEY: some_file
+    LAUNCH_TARGET_SRC_DIR: src/
+    LAUNCH_CONFIG_PATH: configs/config.json
+    KNOWN_HOSTS_FILE: some_file
+    SINGULARITY_VERSION: 3.4.1
+    LAUNCH_VERSION: ${CI_PROJECT_NAME}-${CI_COMMIT_SHORT_SHA}-${CI_COMMIT_REF_NAME}
+    LAUNCH_DESTINATION: ${LAUNCH_TARGET_USERNAME}@${LAUNCH_TARGET_HOSTNAME}
+    LAUNCH_IMAGE_NAME: ${CI_PROJECT_PATH}:${CI_COMMIT_SHORT_SHA}-${CI_COMMIT_REF_NAME}
+    AUTOLAUNCHER_VERSION: main
+    TAGS: estufa # mininostrum, estufa or pepino
+
+transfer:
+  image: ci.atalaya.at/containers/docker:stable
+  stage: transfer
+  script:
+    - 'echo "Target server: ${LAUNCH_TARGET_USERNAME}@${LAUNCH_TARGET_HOSTNAME}"'
+    - 'echo "SSH key path: ${LAUNCH_TARGET_SSH_KEY}"'
+    - time apk add openssh-client rsync git bash
+    - export LAUNCH_IMAGE_NAME=$(env LAUNCH_IMAGE_NAME=${LAUNCH_IMAGE_NAME} bash -c 'echo ${LAUNCH_IMAGE_NAME,,}')
+    - export JOB_WORKDIR=${LAUNCH_TARGET_FOLDER}/jobs/${LAUNCH_VERSION}/
+    - mkdir -p ~/.ssh/
+    - cp ${KNOWN_HOSTS_FILE} ~/.ssh/known_hosts
+    - cp ${LAUNCH_TARGET_SSH_KEY} ~/.ssh/ssh-key
+    - md5sum ~/.ssh/ssh-key
+    - chmod 0600 /root/.ssh/ssh-key
+    - ssh -i /root/.ssh/ssh-key -v ${LAUNCH_TARGET_USERNAME}@${LAUNCH_TARGET_HOSTNAME} mkdir -v -p ${LAUNCH_TARGET_FOLDER}/containers/${LAUNCH_VERSION}/
+    - export LAUNCH_LAST_CONTAINER=$(ssh -i /root/.ssh/ssh-key ${LAUNCH_DESTINATION}
+      ls -tr ${LAUNCH_TARGET_FOLDER}/containers/ | head -n 1)
+    - export KNOWN_HOSTS_CONTENT="$(cat /root/.ssh/known_hosts | base64)"
+    - export SSH_KEY_CONTENT="$(cat /root/.ssh/ssh-key | base64)"
+    - time docker run --rm --name ${LAUNCH_VERSION}
+      -e SINGULARITY_DOCKER_USERNAME=gitlab-ci-token
+      -e SINGULARITY_DOCKER_PASSWORD=${CI_JOB_TOKEN}
+      -e LAUNCH_DESTINATION="${LAUNCH_DESTINATION}"
+      -e LAUNCH_TARGET_FOLDER="${LAUNCH_TARGET_FOLDER}"
+      -e LAUNCH_IMAGE_NAME="${LAUNCH_IMAGE_NAME}"
+      -e LAUNCH_VERSION="${LAUNCH_VERSION}"
+      -e LAUNCH_LAST_CONTAINER="${LAUNCH_LAST_CONTAINER}"
+      -e SINGULARITY_VERSION="${SINGULARITY_VERSION}"
+      -e KNOWN_HOSTS_CONTENT="${KNOWN_HOSTS_CONTENT}"
+      -e SSH_KEY_CONTENT="${SSH_KEY_CONTENT}"
+      --entrypoint '' -v /var/run/docker.sock:/var/run/docker.sock
+      --mount source=singularity,target=/root/.singularity
+      quay.io/singularity/singularity:v${SINGULARITY_VERSION}-slim sh -c
+      'mkdir -p /root/.ssh/ && echo ${KNOWN_HOSTS_CONTENT} | base64 -d > /root/.ssh/known_hosts && echo ${SSH_KEY_CONTENT} | base64 -d > /root/.ssh/ssh-key && chmod 0600 /root/.ssh/ssh-key &&
+      singularity build --sandbox /tmp/container/ "docker://ci.atalaya.at/${LAUNCH_IMAGE_NAME}" &&
+      apk add rsync openssh-client &&
+      rsync -l -azuh --del -e "ssh -i /root/.ssh/ssh-key -o UserKnownHostsFile=/root/.ssh/known_hosts"
+      --link-dest="${LAUNCH_TARGET_FOLDER}/containers/${LAUNCH_LAST_CONTAINER}/"
+      /tmp/container/
+      ${LAUNCH_DESTINATION}:"${LAUNCH_TARGET_FOLDER}/containers/${LAUNCH_VERSION}/"'
+    - time ssh -i /root/.ssh/ssh-key ${LAUNCH_DESTINATION} mkdir -p ${JOB_WORKDIR}/
+    - time scp -i /root/.ssh/ssh-key ${LAUNCH_CONFIG_PATH} ${LAUNCH_DESTINATION}:${JOB_WORKDIR}/${LAUNCH_CONFIG_PATH}
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher
+    - time scp -i /root/.ssh/ssh-key /tmp/autolauncher/autolauncher.py ${LAUNCH_DESTINATION}:${JOB_WORKDIR}/autolauncher.py
+    - scp -i /root/.ssh/ssh-key /tmp/autolauncher/autolauncher.py ${LAUNCH_DESTINATION}:${JOB_WORKDIR}/autolauncher.py
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_AMD.*$/
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_MN4.*$/
+    - when: never
+  tags: 
+    - ${TAGS}

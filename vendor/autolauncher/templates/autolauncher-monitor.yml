@@ -1,0 +1,219 @@
+variables:
+    LAUNCH_TARGET_USERNAME: hpai
+    LAUNCH_TARGET_HOSTNAME: amdlogin.bsc.es
+    LAUNCH_TARGET_SSH_KEY: some_file
+    LAUNCH_TARGET_FOLDER: /gpfs/projects/bsc70/hpai/storage/data/tests/
+    LAUNCH_VERSION: ${CI_PROJECT_NAME}-${CI_COMMIT_SHORT_SHA}-${CI_COMMIT_REF_NAME}
+    KNOWN_HOSTS_FILE: some_file
+    AUTOLAUNCHER_VERSION: main
+    LAUNCH_DESTINATION: ${LAUNCH_TARGET_USERNAME}@${LAUNCH_TARGET_HOSTNAME}
+    JOB_WORKDIR: ${LAUNCH_TARGET_FOLDER}/jobs/${LAUNCH_VERSION}
+    TAGS: estufa # mininostrum, estufa or pepino
+
+monitor_mn4:
+  image: ci.atalaya.at/containers/docker:stable
+  stage: monitor
+  timeout: 96 hours
+  dependencies:
+    - launch_mn4
+  script:
+    - 'echo "Target server: ${LAUNCH_TARGET_USERNAME}@${LAUNCH_TARGET_HOSTNAME}"'
+    - 'echo "SSH key path: ${LAUNCH_TARGET_SSH_KEY}"'
+    - mkdir -p ~/.ssh/
+    - cp ${KNOWN_HOSTS_FILE} ~/.ssh/known_hosts
+    - cp ${LAUNCH_TARGET_SSH_KEY} ~/.ssh/ssh-key
+    - chmod 0600 /root/.ssh/ssh-key
+    - apk add openssh-client git
+    - JOB_PID=`cat autolauncher.out | grep Submitted | cut -d ' ' -f 11 | egrep -o '[0-9.]+'`
+    - echo "The job pid is $JOB_PID"
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher
+    - scp -i /root/.ssh/ssh-key /tmp/autolauncher/utilities/monitor.sh ${LAUNCH_DESTINATION}:${JOB_WORKDIR}/monitor.sh
+    - ssh -i /root/.ssh/ssh-key -o ServerAliveInterval=60 ${LAUNCH_DESTINATION} env JOB_PID=${JOB_PID} OUT_FILE=${JOB_WORKDIR}/output/*_out.txt bash ${JOB_WORKDIR}/monitor.sh
+    - scp -i /root/.ssh/ssh-key ${LAUNCH_DESTINATION}:${JOB_WORKDIR}/output/*_${JOB_PID}_err.txt .
+    - scp -i /root/.ssh/ssh-key ${LAUNCH_DESTINATION}:${JOB_WORKDIR}/output/*_${JOB_PID}_out.txt .
+    - 'tail -n 50 *_out.txt'
+  artifacts:
+    paths:
+      - "*_err.txt"
+      - "*_out.txt"
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_MN4.*$/
+    - when: never
+  tags: 
+    - ${TAGS}
+
+monitor_amd:
+  image: ci.atalaya.at/containers/docker:stable
+  stage: monitor
+  timeout: 96 hours
+  dependencies:
+    - launch_amd
+  script:
+    - 'echo "Target server: ${LAUNCH_TARGET_USERNAME}@${LAUNCH_TARGET_HOSTNAME}"'
+    - 'echo "SSH key path: ${LAUNCH_TARGET_SSH_KEY}"'
+    - mkdir -p ~/.ssh/
+    - cp ${KNOWN_HOSTS_FILE} ~/.ssh/known_hosts
+    - cp ${LAUNCH_TARGET_SSH_KEY} ~/.ssh/ssh-key
+    - chmod 0600 /root/.ssh/ssh-key
+    - apk add openssh-client git
+    - JOB_PID=`cat autolauncher.out | grep Submitted | cut -d ' ' -f 11 | egrep -o '[0-9.]+'`
+    - echo "The job pid is $JOB_PID"
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher
+    - scp -i /root/.ssh/ssh-key /tmp/autolauncher/utilities/monitor.sh ${LAUNCH_DESTINATION}:${JOB_WORKDIR}/monitor.sh
+    - ssh -i /root/.ssh/ssh-key -o ServerAliveInterval=60 ${LAUNCH_DESTINATION} env JOB_PID=${JOB_PID} OUT_FILE=${JOB_WORKDIR}/output/*_out.txt bash ${JOB_WORKDIR}/monitor.sh
+    - scp -i /root/.ssh/ssh-key ${LAUNCH_DESTINATION}:${JOB_WORKDIR}/output/*_${JOB_PID}_err.txt .
+    - scp -i /root/.ssh/ssh-key ${LAUNCH_DESTINATION}:${JOB_WORKDIR}/output/*_${JOB_PID}_out.txt .
+    - 'tail -n 50 *_out.txt'
+  artifacts:
+    paths:
+      - "*_err.txt"
+      - "*_out.txt"
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_AMD.*$/
+    - when: never
+  tags: 
+    - ${TAGS}
+
+monitor_local:
+  image: ci.atalaya.at/containers/docker:stable
+  stage: monitor
+  timeout: 96 hours
+  dependencies:
+    - launch_local
+  script:
+    - apk add git python3 bash
+    - mkdir autolauncher-output
+    - JOB_PID=`cat job.pid | tail -n 1 | egrep -o '[0-9a-f.]+' | tail -n 1 | cut -c 1-12`
+    - echo "The job pid is $JOB_PID"
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher
+    - touch logs
+    - | 
+        while true
+        do
+          docker cp -a ${JOB_PID}:${JOB_WORKDIR}/output autolauncher-output
+          out_file=$(ls autolauncher-output/output/*_out.txt )
+          comm -13 logs $out_file
+          cp $out_file logs
+          if [[ "$(docker ps | grep $JOB_PID)" == "" ]]; then          
+            comm -13 logs $out_file
+            exit 0
+          fi
+          sleep 30
+        done 
+
+    # create artifacts
+    - docker cp -a ${JOB_PID}:${JOB_WORKDIR}/output autolauncher-output
+  artifacts:
+    paths:
+      - autolauncher-output/output
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_LOCAL.*$/
+    - when: never
+  tags: 
+    - ${TAGS}
+
+
+monitor_mn5:
+  id_tokens:
+    CI_JOB_JWT:
+      aud:
+        - https://pass.hpai.bsc.es:18200
+  image: ci.atalaya.at/containers/cesga:0.0.6
+  stage: monitor
+  timeout: 96 hours
+  dependencies:
+    - launch_mn5
+  script:
+    - export VAULT_ADDR=https://pass.hpai.bsc.es:18200
+    - export VAULT_TOKEN="$(vault write -field=token auth/jwt/login role=$GITLAB_USER_LOGIN-read-only jwt=$CI_JOB_JWT)"
+    - USER=$(vault kv get --field=MN5_USER secret/gitlab-ci/mn5/${GITLAB_USER_LOGIN})
+    - PASSWORD=$(vault kv get --field=MN5_PASSWORD secret/gitlab-ci/mn5/${GITLAB_USER_LOGIN})
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher
+    - PROJECT_DIR=/gpfs/projects/bsc70/pipelines/${CI_PROJECT_NAME}
+    - JOB_WORKDIR=${PROJECT_DIR}/${CI_COMMIT_SHORT_SHA}
+    - JOB_PID=$(grep -Eo '[0-9]+' job.info)   
+    - sshpass -p ${PASSWORD} scp -o StrictHostKeyChecking=no /tmp/autolauncher/utilities/monitor.sh ${USER}@${LAUNCH_TARGET_HOSTNAME}:${JOB_WORKDIR}/monitor.sh
+    - sshpass -p ${PASSWORD} ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 ${USER}@${LAUNCH_TARGET_HOSTNAME} env JOB_PID=${JOB_PID} OUT_FILE=${JOB_WORKDIR}/slurm_output/out.txt bash ${JOB_WORKDIR}/monitor.sh
+    - sshpass -p ${PASSWORD} scp -r -o StrictHostKeyChecking=no ${USER}@${LAUNCH_TARGET_HOSTNAME}:${JOB_WORKDIR}/slurm_output .
+    - cat slurm_output/out.txt
+  artifacts:
+    paths:
+      - slurm_output
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_MN5.*$/
+      variables: 
+        LAUNCH_TARGET_HOSTNAME: glogin1.bsc.es
+    - when: never
+  tags: 
+    - ${TAGS}
+
+monitor_cesga:
+  image: ci.atalaya.at/containers/cesga:0.0.6
+  stage: monitor
+  timeout: 96 hours
+  dependencies:
+    - launch_cesga
+  script:
+    - export VAULT_ADDR=https://pass.hpai.bsc.es:18200
+    - export VAULT_TOKEN="$(vault write -field=token auth/jwt/login role=$GITLAB_USER_LOGIN-read-only jwt=$CI_JOB_JWT)"
+    - CESGA_USER=$(vault kv get --field=CESGA_USER secret/gitlab-ci/cesga/$GITLAB_USER_LOGIN)
+    - CESGA_PASSWORD=$(vault kv get --field=CESGA_PASSWORD secret/gitlab-ci/cesga/${GITLAB_USER_LOGIN})
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher
+    - bash /tmp/autolauncher/utilities/cesga_vpn.sh ${CESGA_USER} ${CESGA_PASSWORD}
+    - JOB_WORKDIR=/mnt/lustre/scratch/nlsas/home/res/cns10/SHARE/pipelines/${CI_PROJECT_NAME}/${CI_COMMIT_SHORT_SHA}
+    - JOB_PID=$(grep -Eo '[0-9]+' job.info)   
+    - sshpass -p ${CESGA_PASSWORD} scp -o StrictHostKeyChecking=no /tmp/autolauncher/utilities/monitor.sh ${CESGA_USER}@ft3.cesga.es:${JOB_WORKDIR}/monitor.sh
+    - sshpass -p ${CESGA_PASSWORD} ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 ${CESGA_USER}@ft3.cesga.es env JOB_PID=${JOB_PID} OUT_FILE=${JOB_WORKDIR}/slurm_output/out.txt bash ${JOB_WORKDIR}/monitor.sh
+    - sshpass -p ${CESGA_PASSWORD} scp -r -o StrictHostKeyChecking=no ${CESGA_USER}@ft3.cesga.es:${JOB_WORKDIR}/slurm_output .
+    - cat slurm_output/out.txt
+  artifacts:
+    paths:
+      - slurm_output
+  rules:
+    - if: $CI_COMMIT_TITLE =~ /^LAUNCH_CESGA.*$/
+    - when: never
+  tags: 
+    - cesga
+
+monitor_leonardo:
+  id_tokens:
+    CI_JOB_JWT:
+      aud:
+        - https://pass.hpai.bsc.es:18200
+  image: ci.atalaya.at/containers/cesga:0.0.6
+  stage: monitor
+  timeout: 12 hours
+  script:
+    - export VAULT_ADDR=https://pass.hpai.bsc.es:18200
+    - export VAULT_TOKEN="$(vault write -field=token auth/jwt/login role=$GITLAB_USER_LOGIN-read-only jwt=$CI_JOB_JWT)"
+    - LEONARDO_USER=$(vault kv get --field=LEONARDO_USER secret/gitlab-ci/leonardo/$GITLAB_USER_LOGIN)
+    - git clone -b "${AUTOLAUNCHER_VERSION}" --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.hpai.bsc.es/hpai/autolauncher.git /tmp/autolauncher
+    - PROJECT_DIR=/leonardo_work/EUHPC_A01_083/pipelines/${CI_PROJECT_NAME}
+    - JOB_WORKDIR=${PROJECT_DIR}/${CI_COMMIT_SHORT_SHA}
+    - JOB_PID=$(grep -Eo '[0-9]+' job.info)   
+    - mkdir ~/.ssh
+    - echo ${KEY} | base64 -d > ~/.ssh/keys && source ~/.ssh/keys
+    - echo ${PUB_KEY} > ~/.ssh/leonardo-key.pub
+    - echo ${PRIV_KEY} | base64 -d > ~/.ssh/leonardo-key
+    - echo ${CERT} > ~/.ssh/leonardo-key-cert.pub
+    - chmod 400 ~/.ssh/leonardo-key*
+    - eval $(ssh-agent)
+    - echo ${PARAPHRASE} | SSH_ASKPASS=/bin/cat setsid -w ssh-add ~/.ssh/leonardo-key
+    - mv /tmp/autolauncher/utilities/known_hosts ~/.ssh/known_hosts
+    - scp -i ~/.ssh/leonardo-key -o StrictHostKeyChecking=no /tmp/autolauncher/utilities/monitor.sh ${LEONARDO_USER}@login.leonardo.cineca.it:${JOB_WORKDIR}/monitor.sh
+    - ssh -i ~/.ssh/leonardo-key -o StrictHostKeyChecking=no -o ServerAliveInterval=60 ${LEONARDO_USER}@login.leonardo.cineca.it env JOB_PID=$JOB_PID OUT_FILE=${JOB_WORKDIR}/slurm_output/out.txt bash ${JOB_WORKDIR}/monitor.sh ${LEONARDO_USER}
+    - scp -r -i ~/.ssh/leonardo-key -o StrictHostKeyChecking=no ${LEONARDO_USER}@login.leonardo.cineca.it:${JOB_WORKDIR}/slurm_output .
+    - cat slurm_output/out.txt
+  artifacts:
+    paths:
+      - slurm_output
+  rules:
+    - if: $KEY == null && $CI_COMMIT_TITLE =~ /^LAUNCH_LEONARDO.*$/
+      when: manual
+    - if: $KEY != null && $CI_COMMIT_TITLE =~ /^LAUNCH_LEONARDO.*$/
+    - when: never
+  needs:
+    - job: launch_leonardo
+      artifacts: true
+  tags: 
+    - ${TAGS}

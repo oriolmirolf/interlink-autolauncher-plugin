@@ -1,0 +1,6 @@
+.cache
+.git*
+venv
+/tmp/autolauncher
+exclude_me.txt
+known_hosts
