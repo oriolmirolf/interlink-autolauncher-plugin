@@ -1,7 +1,9 @@
 import os, json, time, shlex, re, io, posixpath
 import yaml
 import paramiko
+from paramiko.ssh_exception import AuthenticationException
 from utils import run, now_rfc3339
+
 
 class LocalRunner:
     """
@@ -17,7 +19,7 @@ class LocalRunner:
 
     def launch(self, uid: str, namespace: str, image: str, command: list[str], args: list[str]) -> str:
         name = self._ensure_name(uid)
-        cmd = ["docker","run","-d","--name",name, image]
+        cmd = ["docker", "run", "-d", "--name", name, image]
         if command:
             cmd.extend(command)
         if args:
@@ -27,20 +29,20 @@ class LocalRunner:
         return jid
 
     def status(self, jid: str) -> dict:
-        r = run(["docker","inspect",jid,"--format","{{json .State}}"], check=False)
+        r = run(["docker", "inspect", jid, "--format", "{{json .State}}"], check=False)
         if r.returncode != 0:
-            return {"phase":"Failed","reason":"NotFound"}
+            return {"phase": "Failed", "reason": "NotFound"}
         st = json.loads(r.stdout.strip())
         if st.get("Running"):
             # StartedAt may be empty for very fresh containers; guard it
             started = st.get("StartedAt") or now_rfc3339()
-            return {"phase":"Running","startedAt": started}
-        if st.get("Status") == "exited" and int(st.get("ExitCode",1)) == 0:
-            return {"phase":"Succeeded"}
-        return {"phase":"Failed","reason": st.get("Error") or st.get("Status","Unknown")}
+            return {"phase": "Running", "startedAt": started}
+        if st.get("Status") == "exited" and int(st.get("ExitCode", 1)) == 0:
+            return {"phase": "Succeeded"}
+        return {"phase": "Failed", "reason": st.get("Error") or st.get("Status", "Unknown")}
 
     def logs(self, jid: str, tail: int | None, previous: bool, timestamps: bool | None) -> str:
-        cmd = ["docker","logs"]
+        cmd = ["docker", "logs"]
         if tail is not None:
             cmd += ["--tail", str(tail)]
         if timestamps:
@@ -51,7 +53,7 @@ class LocalRunner:
         return r.stdout
 
     def delete(self, jid: str):
-        run(["docker","rm","-f",jid], check=False)
+        run(["docker", "rm", "-f", jid], check=False)
 
 
 class HPCRunner:
@@ -68,6 +70,14 @@ class HPCRunner:
       - status via squeue/sacct
       - logs via tail on output/*_<id>_out.txt (fallback: slurm_output/out.txt)
       - delete via scancel
+
+    Auth modes (per-target in targets.yml):
+      - auth: "key"       -> use ssh_key (and optional ssh_key_pass_env)
+      - auth: "password"  -> use password_env / password_file / password
+      - auth: "auto"      -> try key first, then password
+    Username resolution:
+      - user_env: <ENV_VAR_NAME> (preferred for tests)
+      - user:     static username
     """
 
     def __init__(self, target: str = "amd"):
@@ -91,7 +101,7 @@ class HPCRunner:
         if not self.autolauncher_local:
             raise RuntimeError(
                 "autolauncher.py not found. Tried: "
-                + ", ".join(candidates)
+                + ", ".join([x for x in candidates if x])
                 + ". Set AUTOLAUNCHER_LOCAL_PATH or add the file."
             )
 
@@ -101,19 +111,97 @@ class HPCRunner:
         if not self.target:
             raise RuntimeError(f"Unknown HPC target '{target}'. Available: {list((cfg.get('targets') or {}).keys())}")
 
+    # ---------- username resolution ----------
+    def _resolve_user(self) -> str:
+        ue = (self.target.get("user_env") or "").strip()
+        if ue:
+            v = os.environ.get(ue, "").strip()
+            if v:
+                return v
+        u = (self.target.get("user") or "").strip()
+        if not u:
+            raise RuntimeError(
+                f"Target '{self.target_name}': no SSH username found. "
+                f"Set 'user' or provide 'user_env'."
+            )
+        return u
+
     # ---------- SSH helpers ----------
     def _connect(self) -> paramiko.SSHClient:
-        c = paramiko.SSHClient()
-        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        c.connect(
-            hostname=self.target["host"],
-            username=self.target["user"],
-            key_filename=self.target["ssh_key"],
-            look_for_keys=False,
-            allow_agent=False,
-            timeout=20,
-        )
-        return c
+        host = self.target["host"]
+        port = int(self.target.get("port", 22))
+        user = self._resolve_user()
+
+        auth_mode = (self.target.get("auth") or "key").lower()  # key | password | auto
+        keyfile = self.target.get("ssh_key")
+        key_pass_env = self.target.get("ssh_key_pass_env")
+        key_pass = os.environ.get(key_pass_env) if key_pass_env else None
+
+        pw_env = self.target.get("password_env")
+        pw_file = self.target.get("password_file")
+        pw_literal = self.target.get("password")
+        password = None
+        if pw_env and os.environ.get(pw_env):
+            password = os.environ.get(pw_env)
+        elif pw_file and os.path.exists(pw_file):
+            try:
+                with open(pw_file, "r") as f:
+                    password = f.read().strip()
+            except Exception:
+                password = None
+        elif pw_literal:
+            password = pw_literal
+
+        cli = paramiko.SSHClient()
+        cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        def connect_key():
+            if not keyfile:
+                raise RuntimeError("ssh_key required for key authentication.")
+            cli.connect(
+                hostname=host,
+                port=port,
+                username=user,
+                key_filename=keyfile,
+                passphrase=key_pass,
+                look_for_keys=False,
+                allow_agent=False,
+                timeout=20,
+                banner_timeout=20,
+                auth_timeout=20,
+            )
+
+        def connect_pw():
+            if not password:
+                raise RuntimeError(
+                    "Password auth selected but no password found. "
+                    "Provide password_env / password_file / password."
+                )
+            cli.connect(
+                hostname=host,
+                port=port,
+                username=user,
+                password=password,
+                look_for_keys=False,
+                allow_agent=False,
+                timeout=20,
+                banner_timeout=20,
+                auth_timeout=20,
+            )
+
+        if auth_mode == "key":
+            connect_key()
+        elif auth_mode == "password":
+            connect_pw()
+        elif auth_mode == "auto":
+            try:
+                connect_key()
+            except Exception:
+                connect_pw()
+        else:
+            raise RuntimeError(f"Unknown auth mode '{auth_mode}' (expected key|password|auto)")
+
+        return cli
 
     @staticmethod
     def _sftp_mkdirs(sftp: paramiko.SFTPClient, path: str):
@@ -209,10 +297,12 @@ class HPCRunner:
 
             # launch
             py = self.target.get("python", "python3")
-            cmd = f'{py} autolauncher.py --cluster {shlex.quote(self.target["cluster"])} ' \
-                  f'--file {shlex.quote(posixpath.join(config_dir,"config.json"))} ' \
-                  f'--workdir {shlex.quote(job_dir)} ' \
-                  f'--containerdir {shlex.quote(containerdir)}'
+            cmd = (
+                f'{py} autolauncher.py --cluster {shlex.quote(self.target["cluster"])} '
+                f'--file {shlex.quote(posixpath.join(config_dir,"config.json"))} '
+                f'--workdir {shlex.quote(job_dir)} '
+                f'--containerdir {shlex.quote(containerdir)}'
+            )
             rc, out, err = self._ssh(c, cmd, cwd=job_dir)
             combined = out + "\n" + err
             m = re.search(r"Submitted batch job\s+(\d+)", combined)
@@ -265,7 +355,6 @@ class HPCRunner:
         n = tail or 200
         c = self._connect()
         try:
-            job_dir = posixpath.join(self.target["workdir_base"], "*")  # we don’t know uid here; try glob
             # Prefer autolauncher default output files containing _<jid>_
             cmd = f'''
                 set -e
@@ -287,97 +376,3 @@ class HPCRunner:
             self._ssh(c, f"scancel {shlex.quote(jid)} || true")
         finally:
             c.close()
-
-    def _connect(self) -> paramiko.SSHClient:
-        """
-        Auth modes:
-        - auth: "key"       -> require ssh_key (optionally ssh_key_pass_env)
-        - auth: "password"  -> use password_env/password_file/password
-        - auth: "auto" or missing:
-                try key if present; on failure or missing, try password.
-        """
-        c = paramiko.SSHClient()
-        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        hostname = self.target["host"]
-        username = self.target["user"]
-        auth_mode = (self.target.get("auth") or "auto").lower()
-
-        # Common connect args
-        base_kwargs = dict(
-            hostname=hostname,
-            username=username,
-            allow_agent=False,
-            look_for_keys=False,
-            timeout=20,
-            banner_timeout=20,
-            auth_timeout=20,
-        )
-
-        def try_key():
-            keyfile = self.target.get("ssh_key")
-            if not keyfile:
-                return False
-            pass_env = self.target.get("ssh_key_pass_env")
-            kwargs = dict(base_kwargs)
-            kwargs["key_filename"] = keyfile
-            if pass_env and os.environ.get(pass_env):
-                # cos paramiko uses passphrase
-                kwargs["passphrase"] = os.environ[pass_env]
-            c.connect(**kwargs)
-            return True
-
-        def try_password():
-            pw = self._get_password(self.target)
-            if not pw:
-                return False
-            kwargs = dict(base_kwargs)
-            kwargs["password"] = pw
-            try:
-                c.connect(**kwargs)
-            except paramiko.ssh_exception.AuthenticationException:
-                t = paramiko.Transport((hostname, 22))
-                t.connect(username=username, password=pw)
-                c._transport = t
-            return True
-
-        # --- explicit modes ---
-        if auth_mode == "key":
-            if not try_key():
-                raise RuntimeError(f"Target '{self.target_name}': ssh_key required for auth=key.")
-            return c
-
-        if auth_mode == "password":
-            if not try_password():
-                raise RuntimeError(f"Target '{self.target_name}': no usable password (password_env/password_file/password).")
-            return c
-
-        # auto: try key, if fails then password
-        try:
-            if try_key():
-                return c
-        except Exception:
-            pass
-        if try_password():
-            return c
-
-        raise RuntimeError(
-            f"Target '{self.target_name}': no working auth. "
-            f"Provide ssh_key (and optional ssh_key_pass_env) or password_env/password_file/password."
-        )
-
-    @staticmethod
-    def _get_password(t: dict) -> str | None:
-        if t.get("password_env"):
-            v = os.environ.get(t["password_env"])
-            if v:
-                return v
-        if t.get("password_file"):
-            try:
-                with open(t["password_file"], "r") as f:
-                    return f.read().strip()
-            except Exception:
-                return None
-        if t.get("password"):
-            return t["password"]
-        return None
