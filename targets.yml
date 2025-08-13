@@ -19,13 +19,16 @@ targets:
     python: python3
     cluster: mn4
 
-  # MN5 Accelerated — password-auth (for testing)
+  # MN5 password (for testing)
   mn5_acc_pw:
     host: alogin1.bsc.es
     auth: password
-    user_env: MN5_ACC_USERNAME        # username comes from env var
-    password_env: MN5_ACC_PASSWORD    # password comes from env var
-    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
+    user_env: MN5_ACC_USERNAME
+    password_env: MN5_ACC_PASSWORD
+    workdir_base: /home/bsc/bsc449422/autolauncher-jobs
     containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
     python: python3
-    cluster: mn4                      # or amd, depending on your autolauncher profile
+    cluster: amd
+    account: bsc70
+    qos: gp_bsccs
+    # partition: acc

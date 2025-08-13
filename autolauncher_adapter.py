@@ -78,15 +78,22 @@ class AutolauncherAdapter:
                 })
             else:
                 runner = HPCRunner(target=target)
-                annotations = pod.metadata.annotations or {}
                 jid = runner.launch_hpc(
-                    uid=uid,
-                    namespace=namespace,
-                    image=image,
-                    command=command,
-                    args=args,
-                    annotations=annotations,
+                    uid=uid, namespace=namespace, image=image,
+                    command=command, args=args, annotations=annotations,
                 )
+                self.state.upsert(uid, {
+                    "name": meta.name or uid,
+                    "namespace": namespace,
+                    "mode": "hpc",
+                    "target": target,
+                    "image": image,
+                    "jid": jid,
+                    "created_at": time.time(),
+                    "status": "Pending",
+                    "container_name": container.name,
+                    "log_cursor": 0,
+                })
 
             results.append({"PodUID": uid, "PodJID": jid})
         return results
