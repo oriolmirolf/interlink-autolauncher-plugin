@@ -25,17 +25,17 @@ EOF
 }
 
 RESTART=1
-MN5_USER="${MN5_USER:-}"
-MN5_PW="${MN5_PW:-}"
-MN5_KEY_PP="${MN5_KEY_PP:-}"
+MN5_ACC_USERNAME="${MN5_ACC_USERNAME:-}"
+MN5_ACC_PASSWORD="${MN5_ACC_PASSWORD:-}"
+MN5_ACC_KEY_PASSPHRASE="${MN5_ACC_KEY_PASSPHRASE:-}"
 CESGA_USER="${CESGA_USER:-}"
 CESGA_PW="${CESGA_PW:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --mn5-acc-user)             shift; MN5_USER="${1-}";;
-    --mn5-acc-password|--mn5-pw)shift; MN5_PW="${1-}";;
-    --mn5-acc-key-passphrase)   shift; MN5_KEY_PP="${1-}";;
+    --mn5-acc-user)             shift; MN5_ACC_USERNAME="${1-}";;
+    --mn5-acc-password|--mn5-pw)shift; MN5_ACC_PASSWORD="${1-}";;
+    --mn5-acc-key-passphrase)   shift; MN5_ACC_KEY_PASSPHRASE="${1-}";;
     --cesga-user)               shift; CESGA_USER="${1-}";;
     --cesga-password)           shift; CESGA_PW="${1-}";;
     --restart)                  RESTART=1;;
@@ -57,9 +57,9 @@ prompt_value() { # name, prompt, silent(0/1)
 }
 
 # Only prompt if blank
-[[ -n "${MN5_USER}"   ]] || prompt_value MN5_USER   "Enter MN5 ACC username (blank to skip)" 0
-[[ -n "${MN5_PW}"     ]] || prompt_value MN5_PW     "Enter MN5 ACC password (blank to skip)" 1
-[[ -n "${MN5_KEY_PP}" ]] || prompt_value MN5_KEY_PP "Enter MN5 SSH key passphrase (blank if none)" 1
+[[ -n "${MN5_ACC_USERNAME}"   ]] || prompt_value MN5_ACC_USERNAME   "Enter MN5 ACC username (blank to skip)" 0
+[[ -n "${MN5_ACC_PASSWORD}"     ]] || prompt_value MN5_ACC_PASSWORD     "Enter MN5 ACC password (blank to skip)" 1
+[[ -n "${MN5_ACC_KEY_PASSPHRASE}" ]] || prompt_value MN5_ACC_KEY_PASSPHRASE "Enter MN5 SSH key passphrase (blank if none)" 1
 [[ -n "${CESGA_USER}" ]] || prompt_value CESGA_USER "Enter CESGA username (blank to skip)" 0
 [[ -n "${CESGA_PW}"   ]] || prompt_value CESGA_PW   "Enter CESGA password (blank to skip)" 1
 
@@ -87,9 +87,9 @@ upsert_env() {
   fi
 }
 
-upsert_env "MN5_ACC_USERNAME"       "${MN5_USER}"
-upsert_env "MN5_ACC_PASSWORD"       "${MN5_PW}"
-upsert_env "MN5_ACC_KEY_PASSPHRASE" "${MN5_KEY_PP}"
+upsert_env "MN5_ACC_USERNAME"       "${MN5_ACC_USERNAME}"
+upsert_env "MN5_ACC_PASSWORD"       "${MN5_ACC_PASSWORD}"
+upsert_env "MN5_ACC_KEY_PASSPHRASE" "${MN5_ACC_KEY_PASSPHRASE}"
 upsert_env "CESGA_USERNAME"         "${CESGA_USER}"
 upsert_env "CESGA_PASSWORD"         "${CESGA_PW}"
 
