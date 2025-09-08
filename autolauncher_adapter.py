@@ -1,4 +1,4 @@
-import os, json, time
+import os, json, time, shlex
 from typing import List
 from plugin_state import PluginState
 from runner import LocalRunner, HPCRunner
@@ -29,6 +29,31 @@ class AutolauncherAdapter:
         target = (ann.get("interlink.autolauncher/target") or "").lower() or "local"
         return target
 
+    @staticmethod
+    def _normalize_command_args(command, args) -> tuple[list[str], list[str]]:
+        """
+        Accept command/args as list or string.
+        - If command is a string, merge args into one shell line and run via bash -lc.
+        - If command is a list, keep as-is and coerce args to list.
+        """
+        def to_list(x):
+            if x is None:
+                return []
+            if isinstance(x, list):
+                return x
+            if isinstance(x, str):
+                return [x]
+            return []
+
+        # String command -> run under bash -lc "cmd [args...]"
+        if isinstance(command, str):
+            a = to_list(args)
+            shell_line = " ".join([command] + [shlex.quote(v) for v in a]) if a else command
+            return (["bash", "-lc"], [shell_line])
+
+        # List command -> pass through, ensure args is a list
+        return (to_list(command), to_list(args))
+
     # ---------- /create ----------
     def create(self, pods: List) -> List[dict]:
         results = []
@@ -44,8 +69,7 @@ class AutolauncherAdapter:
 
             container   = spec.containers[0]
             image       = container.image
-            command     = container.command or []
-            args        = container.args or []
+            cmd_list, arg_list = self._normalize_command_args(container.command, container.args)
 
             # already created?
             if self.state.exists(uid):
@@ -60,8 +84,8 @@ class AutolauncherAdapter:
                     uid=uid,
                     namespace=namespace,
                     image=image,
-                    command=command,
-                    args=args,
+                    command=cmd_list,
+                    args=arg_list,
                 )
                 started_at = time.time()
                 self.state.upsert(uid, {
@@ -80,7 +104,7 @@ class AutolauncherAdapter:
                 runner = HPCRunner(target=target)
                 jid = runner.launch_hpc(
                     uid=uid, namespace=namespace, image=image,
-                    command=command, args=args, annotations=annotations,
+                    command=cmd_list, args=arg_list, annotations=annotations,
                 )
                 self.state.upsert(uid, {
                     "name": meta.name or uid,
