@@ -100,18 +100,6 @@ class HPCRunner:
         self.target_name = target
         self.targets_file = os.getenv("PLUGIN_TARGETS_FILE", "/etc/interlink-autolauncher-plugin/targets.yml")
 
-        # Read the targets file every time an instance is created.
-        try:
-            with open(self.targets_file, "r") as f:
-                cfg = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            raise RuntimeError(f"Targets file not found at: {self.targets_file}")
-
-        self.target = (cfg.get("targets") or {}).get(target)
-        if not self.target:
-            available_keys = list((cfg.get('targets') or {}).keys())
-            raise RuntimeError(f"Unknown HPC target '{target}'. Available in {self.targets_file}: {available_keys}")
-
         configured = os.getenv("AUTOLAUNCHER_LOCAL_PATH")
         default_vendor = os.path.join(os.getcwd(), "vendor", "autolauncher", "autolauncher.py")
         default_toplvl = os.path.join(os.getcwd(), "autolauncher", "autolauncher.py")
@@ -128,6 +116,12 @@ class HPCRunner:
                 + ", ".join([x for x in candidates if x])
                 + ". Set AUTOLAUNCHER_LOCAL_PATH or add the file."
             )
+
+        with open(self.targets_file, "r") as f:
+            cfg = yaml.safe_load(f) or {}
+        self.target = (cfg.get("targets") or {}).get(target)
+        if not self.target:
+            raise RuntimeError(f"Unknown HPC target '{target}'. Available: {list((cfg.get('targets') or {}).keys())}")
 
     # ---------- SSH helpers ----------
     def _resolve_user(self) -> str:

@@ -1,19 +1,25 @@
-# targets.yml
 targets:
-  # New target for AMD with password auth
-  amd_pw:
-    host: amdlogin1.bsc.es
-    auth: password
-    user_env: MN5_ACC_USERNAME
-    password_env: MN5_ACC_PASSWORD
+  # Example SSH-key target (kept for reference)
+  amd:
+    host: amdlogin.bsc.es
+    user: hpai
+    ssh_key: /home/ubuntu/.ssh/id_rsa
     workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
     containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
     python: python3
     cluster: amd
-    account: bsc70
-    qos: gp_bsccs
 
-  # Kept for reference
+  # Example SSH-key target (kept for reference)
+  mn4:
+    host: mn1.bsc.es
+    user: hpai
+    ssh_key: /home/ubuntu/.ssh/id_rsa
+    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
+    containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
+    python: python3
+    cluster: mn4
+
+  # MN5 password (for testing)
   mn5_acc_pw:
     host: alogin1.bsc.es
     auth: password
@@ -25,21 +31,4 @@ targets:
     cluster: amd
     account: bsc70
     qos: gp_bsccs
-
-  # Original SSH-key based targets (kept for reference)
-  amd:
-    host: amdlogin.bsc.es
-    user: hpai
-    ssh_key: /home/ubuntu/.ssh/id_rsa
-    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
-    containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
-    python: python3
-    cluster: amd
-  mn4:
-    host: mn1.bsc.es
-    user: hpai
-    ssh_key: /home/ubuntu/.ssh/id_rsa
-    workdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/jobs
-    containerdir_base: /gpfs/projects/bsc70/hpai/storage/data/tests/containers
-    python: python3
-    cluster: mn4a
+    # partition: acc
