@@ -84,17 +84,12 @@ class LogRequest(BaseModel):
     ContainerName: str
     Opts: LogOpts
 
-
-# ----- Helpers -----
 def _uids_from_query(uid_param: List[str]) -> List[str]:
-    """Support ?uid=a&uid=b and ?uid=a,b forms."""
     out: List[str] = []
     for u in uid_param:
         out.extend([p.strip() for p in u.split(",") if p.strip()])
     return out
 
-
-# ----- Routes required by the guide -----
 @app.post("/create", response_model=List[CreateStruct])
 def create_pod(pods: List[Pod]):
     try:
@@ -116,7 +111,6 @@ def delete_pod(pod: PodRequest):
 def status_pod_get(uid: List[str] = Query(..., description="Repeat ?uid=x&uid=y or CSV ?uid=x,y")):
     try:
         uids = _uids_from_query(uid)
-        # Adapter only needs UID; other fields are recovered from state.
         pods_minimal = [PodRequest(metadata=Metadata(uid=u), spec=PodSpec(containers=[])) for u in uids]
         return adapter.status(pods_minimal)
     except Exception as e:
@@ -151,12 +145,9 @@ def get_logs_get(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# ----- Extras -----
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
 
 if __name__ == "__main__":
     import uvicorn
