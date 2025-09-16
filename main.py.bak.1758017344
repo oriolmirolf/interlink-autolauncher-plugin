@@ -1,4 +1,3 @@
-# main.py
 import os
 import re
 import json
@@ -6,7 +5,7 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 import interlink
 from fastapi import FastAPI, HTTPException, Request
@@ -33,7 +32,7 @@ class AutolauncherProvider(interlink.provider.Provider):
     def create(self, pod: interlink.Pod) -> None:
         meta = pod.pod.metadata
         spec = pod.pod.spec
-        _ = spec.containers[0]
+        c = spec.containers[0]
 
         # 1) Resolve configuration from annotations + env defaults + container fields
         cfg = self._build_autolauncher_config(pod)
@@ -44,6 +43,7 @@ class AutolauncherProvider(interlink.provider.Provider):
         job_name = self._sanitize(job_name)
         cfg["job_name"] = job_name
 
+        # Make output/launcher filenames deterministic for log streaming
         output_base = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{job_name}"
         if "output_dir" not in cfg:
             cfg["output_dir"] = str(Path(cfg["workdir"]) / "output")
@@ -52,7 +52,7 @@ class AutolauncherProvider(interlink.provider.Provider):
         cfg["output_filename"] = str(Path(cfg["output_dir"]) / (output_base + "_out"))
         cfg["error_filename"] = str(Path(cfg["output_dir"]) / (output_base + "_err"))
 
-        # 3) Persist JSON (local staging) and copy to remote
+        # 3) Persist JSON (local staging) and copy to remote (or local if edge has GPFS)
         local_json = Path(self.s.LOCAL_STAGING_DIR) / f"{meta.uid}.json"
         local_json.parent.mkdir(parents=True, exist_ok=True)
         with open(local_json, "w") as f:
@@ -92,9 +92,12 @@ class AutolauncherProvider(interlink.provider.Provider):
         jid = info.get("jid")
         if jid:
             rc, out, err = self._run(self.slurm.scancel(jid))
-            if rc != 0 and not self._already_deleted((err or "") + (out or "")):
-                raise HTTPException(status_code=500, detail=f"scancel failed: {err or out}")
+            if rc != 0:
+                # If already gone, accept as deleted
+                if not self._already_deleted(err + out):
+                    raise HTTPException(status_code=500, detail=f"scancel failed: {err or out}")
 
+        # best-effort: keep logs, drop mapping
         self.state.delete(pod.metadata.uid)
 
     def status(self, pod: interlink.PodRequest) -> interlink.PodStatus:
@@ -102,6 +105,7 @@ class AutolauncherProvider(interlink.provider.Provider):
         if not info:
             raise HTTPException(status_code=404, detail="Pod UID unknown")
 
+        # Default container status
         def base_status(state):
             return interlink.PodStatus(
                 name=pod.metadata.name,
@@ -115,6 +119,7 @@ class AutolauncherProvider(interlink.provider.Provider):
 
         jid = info.get("jid")
         if not jid:
+            # No SLURM job id (e.g., local run) — infer from logs
             term = interlink.StateTerminated(reason="Completed (no JID)", exitCode=0)
             return base_status(interlink.ContainerStates(running=None, waiting=None, terminated=term))
 
@@ -126,6 +131,7 @@ class AutolauncherProvider(interlink.provider.Provider):
             wait = interlink.StateWaiting(reason=s.state, message=s.reason)
             return base_status(interlink.ContainerStates(running=None, waiting=wait, terminated=None))
         else:
+            # Completed/Failed/Cancelled/Timeout
             code = 0 if s.state == "COMPLETED" else (s.exit_code or 1)
             term = interlink.StateTerminated(reason=s.state, exitCode=code)
             return base_status(interlink.ContainerStates(running=None, waiting=None, terminated=term))
@@ -135,8 +141,9 @@ class AutolauncherProvider(interlink.provider.Provider):
         if not info:
             raise HTTPException(status_code=404, detail="Pod UID unknown")
 
+        # Choose stdout by default; allow container name suffix "stderr" to force err file
         path = info.get("output")
-        if getattr(req, "container", "") and req.container.endswith(":stderr"):
+        if req.container and req.container.endswith(":stderr"):
             path = info.get("error")
 
         try:
@@ -144,8 +151,9 @@ class AutolauncherProvider(interlink.provider.Provider):
         except Exception as e:
             raise HTTPException(status_code=404, detail=f"Log not found: {path}: {e}")
 
-        tail = getattr(getattr(req, "Opts", None), "Tail", None)
-        if isinstance(tail, int):
+        # Tail if requested
+        tail = getattr(req.Opts, 'Tail', None) if req.Opts else None
+        if tail and isinstance(tail, int):
             lines = content.splitlines()[-tail:]
             return ("\n".join(lines)).encode()
         return content.encode()
@@ -164,6 +172,7 @@ class AutolauncherProvider(interlink.provider.Provider):
         binary = a("binary", self.s.DEFAULT_BINARY)
         command, args = self._derive_command_and_args(cnt, a("command"), a("args"))
 
+        # Core config
         cfg: Dict[str, Any] = {
             "cluster": a("cluster", self.s.DEFAULT_CLUSTER),
             "workdir": a("workdir", self.s.DEFAULT_WORKDIR),
@@ -174,46 +183,44 @@ class AutolauncherProvider(interlink.provider.Provider):
             "args": args,
             "add_commit_tag": self._to_bool(a("addCommitTag", str(self.s.DEFAULT_ADD_COMMIT_TAG).lower())),
             "use_code_in_gpfs": self._to_bool(a("useCodeInGPFS", str(self.s.DEFAULT_USE_CODE_IN_GPFS).lower())),
+            # SLURM resources (allow overrides via annotations)
             "qos": a("qos", self.s.DEFAULT_QOS),
             "time": a("walltime", self.s.DEFAULT_WALLTIME),
             "ntasks": int(a("ntasks", str(self.s.DEFAULT_NTASKS))),
             "cpus-per-task": int(a("cpusPerTask", str(self.s.DEFAULT_CPUS_PER_TASK))),
         }
 
-        # Optional flags (typed)
+        # Optional flags
         for k in ["nodes", "tasks-per-node", "exclusive", "highmem", "gres"]:
             v = a(k)
-            if v is None:
-                continue
-            if k in {"exclusive", "highmem"}:
-                cfg[k] = self._to_bool(v)
-            elif k in {"gres", "nodes", "tasks-per-node"}:
-                try:
-                    cfg[k] = int(v)
-                except ValueError:
+            if v is not None:
+                if k in {"exclusive", "highmem"}:
+                    cfg[k] = self._to_bool(v)
+                elif k in {"gres", "nodes", "tasks-per-node"}:
+                    try:
+                        cfg[k] = int(v)
+                    except ValueError:
+                        cfg[k] = v
+                else:
                     cfg[k] = v
-            else:
-                cfg[k] = v
 
-        # Extra binds (comma separated "src:dst")
+        # Extra Singularity/Docker binds
         binds = a("binds")
         if binds:
+            # Comma-separated list of "src:dst" entries
             cfg["bindings_list"] = [b.strip() for b in binds.split(",") if b.strip()]
 
-        # Optional: nolaunch flag via annotation (so you can dry-run)
-        nolaunch = a("nolaunch")
-        if nolaunch is not None:
-            cfg["nolaunch"] = self._to_bool(nolaunch)
-
-        # Resources → SLURM
+        # If resources present in pod, map cpu & gpu to SLURM
         res = cnt.resources
         if res and res.limits:
+            # CPU
             cpu = res.limits.get("cpu") if isinstance(res.limits, dict) else None
             if cpu:
                 try:
                     cfg["cpus-per-task"] = int(float(str(cpu).replace("m", "")))
                 except Exception:
                     pass
+            # GPU
             for k in ("nvidia.com/gpu", "amd.com/gpu", "gpu"):
                 if k in res.limits:
                     try:
@@ -224,79 +231,84 @@ class AutolauncherProvider(interlink.provider.Provider):
         return cfg
 
     def _derive_command_and_args(self, container, ann_command: Optional[str], ann_args: Optional[str]):
+        # Priority: annotations override, else container.command/args
         if ann_command is not None or ann_args is not None:
             return ann_command or "", ann_args or ""
 
+        # From container spec
         cmd = container.command or []
         args = container.args or []
         if cmd:
             if cmd[0] in ("python", "python3"):
+                # We'll set binary accordingly in _build_autolauncher_config
                 return (cmd[1] if len(cmd) > 1 else ""), " ".join(args)
             else:
+                # Treat whole command as the script, keep args
                 return " ".join(cmd), " ".join(args)
         return "", " ".join(args)
 
     def _autolaunch_cmd(self, remote_json: str, cfg: Dict[str, Any]) -> List[str]:
+        # We call: python autolauncher.py -f <json>
         launcher = self.s.AUTOLAUNCHER_PATH
         pybin = self.s.PYTHON_BIN
         return self._remote_cmd([pybin, launcher, "-f", remote_json])
 
     def _parse_job_id(self, output: str) -> Optional[str]:
+        # Typical sbatch response contains: "Submitted batch job 123456"
         m = re.search(r"Submitted batch job (\d+)", output)
         if m:
             return m.group(1)
+        # Fallback: look for integer on its own line
         m = re.search(r"\b(\d{5,})\b", output)
         return m.group(1) if m else None
 
     # ------ process / file ops (local or over SSH) ------
-    def _sshwrap(self, base: List[str]) -> List[str]:
+    def _sshwrap(self, base):
+        import os
         use = os.getenv("IL_SSH_USE_SSHPASS", "0").lower() in ("1", "true", "yes")
-        pw = os.getenv("IL_SSH_PASS", "")
+        pw  = os.getenv("IL_SSH_PASS", "")
         if self.s.SSH_DEST and use and pw:
             return ["sshpass", "-p", pw] + base
         return base
 
     def _remote_cmd(self, base: List[str]) -> List[str]:
         if self.s.SSH_DEST:
+            # Wrap into ssh bash -lc "..."
             joined = " ".join([shlex_quote(x) for x in base])
-            return self._sshwrap(["ssh", "-o", "StrictHostKeyChecking=no",
-                                  self.s.SSH_DEST, "bash", "-lc", joined])
+            return self._sshwrap(["ssh", self.s.SSH_DEST, "bash", "-lc", joined])
         return base
 
     def _run(self, cmd: List[str]):
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+            out = (p.stdout or "").strip()
+            err = (p.stderr or "").strip()
+            return p.returncode, out, err
         except Exception as e:
             return 1, "", str(e)
 
     def _push_file(self, local: Path, remote_path: str):
         if self.s.SSH_DEST:
+            # copy via scp to remote_path
             remote_dir = os.path.dirname(remote_path)
-            self._run(self._sshwrap(["ssh", "-o", "StrictHostKeyChecking=no",
-                                     self.s.SSH_DEST, "mkdir", "-p", remote_dir]))
-            rc, out, err = self._run(
-                self._sshwrap([
-                    "scp", "-o", "StrictHostKeyChecking=no",
-                    str(local), f"{self.s.SSH_DEST}:{remote_path}"
-                ])
-            )
+            self._run(["ssh", self.s.SSH_DEST, "mkdir", "-p", remote_dir])
+            rc, out, err = self._run(["scp", str(local), f"{self.s.SSH_DEST}:{remote_path}"])
             if rc != 0:
                 raise HTTPException(status_code=500, detail=f"scp failed: {err or out}")
         else:
+            # local move into GPFS-visible path
             dest = Path(remote_path)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(local, dest)
 
     def _to_remote_path(self, local_staged: Path) -> str:
-        return str(Path(self.s.DEFAULT_WORKDIR) / "launchers" / f"{local_staged.stem}.json")
+        # Place the JSON next to the workdir (fast & visible by autolauncher)
+        p = Path(self.s.DEFAULT_WORKDIR) / "launchers" / f"{local_staged.stem}.json"
+        return str(p)
 
     def _read_remote_file(self, remote_path: str) -> str:
         if self.s.SSH_DEST:
-            rc, out, err = self._run(
-                self._sshwrap(["ssh", "-o", "StrictHostKeyChecking=no",
-                               self.s.SSH_DEST, "cat", remote_path])
-            )
+            rc, out, err = self._run(["ssh", self.s.SSH_DEST, "cat", remote_path])
             if rc != 0:
                 raise RuntimeError(err or out)
             return out
@@ -306,7 +318,7 @@ class AutolauncherProvider(interlink.provider.Provider):
 
     def _already_deleted(self, s: str) -> bool:
         s = (s or "").lower()
-        return any(x in s for x in ["invalid job id", "not found", "already completed", "slurmdbd"])
+        return any(x in s for x in ["invalid job id", "not found", "already completed", "slurmdbd" ])
 
     def _sanitize(self, name: str) -> str:
         return re.sub(r"[^a-zA-Z0-9_.-]", "-", name)[:120]
@@ -323,7 +335,6 @@ provider = AutolauncherProvider(settings)
 
 
 # ---------------- FastAPI endpoints ----------------
-
 @app.post("/create")
 async def create_pod(pods: List[interlink.Pod]) -> List[interlink.CreateStruct]:
     return provider.create_pod(pods)
@@ -332,17 +343,30 @@ async def create_pod(pods: List[interlink.Pod]) -> List[interlink.CreateStruct]:
 async def delete_pod(pod: interlink.PodRequest) -> str:
     return provider.delete_pod(pod)
 
-# HEALTH-FRIENDLY: return [] if no pods provided (for /pinglink)
 @app.get("/status")
 async def status_pod(request: Request) -> List[interlink.PodStatus]:
+    """
+    Health-friendly status endpoint:
+    - No params/body -> return []
+    - Else accept:
+        * Query param 'pods' containing JSON array
+        * Raw JSON body as array
+    """
     pods = None
     try:
-        q = request.query_params.get("pods")
-        if q:
-            data = json.loads(q)
-            pods = [interlink.PodRequest(**it) for it in data]
+        import json as _json
+        qp = request.query_params.get('pods')
+        if qp:
+            pods_json = _json.loads(qp)
+            pods = [interlink.PodRequest(**it) for it in pods_json]
+        else:
+            body = await request.body()
+            if body:
+                pods_json = _json.loads(body.decode())
+                pods = [interlink.PodRequest(**it) for it in pods_json]
     except Exception:
         pods = None
+
     if not pods:
         return []
     return provider.get_status(pods)

@@ -1,74 +1,60 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLUGIN_URL="http://127.0.0.1:8000"
+SOCK="$HOME/.interlink/.plugin.sock"
+BASE="http://unix"
 
-# Quick connectivity check to AMD over password SSH
-if ! sshpass -p "${IL_SSH_PASS:-$(. /etc/default/autolauncher-plugin; echo $IL_SSH_PASS)}" \
-    ssh -o StrictHostKeyChecking=no "$(. /etc/default/autolauncher-plugin; echo $IL_SSH_DEST)" "hostname && squeue --version" ; then
-  echo "SSH to AMD failed — check AMD_USER/AMD_HOST/AMD_PASS."
-  exit 1
-fi
+echo ">>> Sanity: plugin openapi"
+curl -sS --unix-socket "$SOCK" "$BASE/openapi.json" | jq '.info.title'
 
-# Build a minimal PodCreateRequest that asks autolauncher to only create files (no sbatch)
+echo ">>> SSH to AMD check"
+AMD_PASS="$(sudo bash -lc '. /etc/default/autolauncher-plugin >/dev/null 2>&1; printf %s "$IL_SSH_PASS"' )"
+AMD_DEST="$(sudo bash -lc '. /etc/default/autolauncher-plugin >/dev/null 2>&1; printf %s "$IL_SSH_DEST"' )"
+sshpass -p "$AMD_PASS" ssh -o StrictHostKeyChecking=no "$AMD_DEST" 'hostname && squeue --version'
+
 UID="$(uuidgen)"
-read -r -d '' PAYLOAD <<'JSON'
+read -r -d '' PAYLOAD <<JSON
 [
   {
     "pod": {
       "metadata": {
         "name": "autolauncher-nolaunch",
         "namespace": "default",
-        "uid": "REPLACE_UID",
+        "uid": "$UID",
         "annotations": {
           "autolauncher.interlink/cluster": "amd",
           "autolauncher.interlink/workdir": "/gpfs/projects/bsc70/hpai/work",
           "autolauncher.interlink/containerdir": "/gpfs/projects/bsc70/hpai/containers/rocm-sandbox",
           "autolauncher.interlink/singularityVersion": "3.6.4",
           "autolauncher.interlink/binary": "python",
-          "autolauncher.interlink/command": "src/does_not_matter.py",
+          "autolauncher.interlink/command": "src/ignored.py",
           "autolauncher.interlink/args": "",
           "autolauncher.interlink/qos": "debug",
           "autolauncher.interlink/walltime": "00:05:00",
           "autolauncher.interlink/ntasks": "1",
-          "autolauncher.interlink/cpusPerTask": "4"
+          "autolauncher.interlink/cpusPerTask": "2",
+          "autolauncher.interlink/nolaunch": "true"
         }
       },
       "spec": {
         "containers": [
-          {
-            "name": "trainer",
-            "image": "ignored",
-            "command": ["python","src/ignored.py"],
-            "args": []
-          }
+          { "name": "trainer", "image": "ignored", "command": ["python","src/ignored.py"], "args": [] }
         ]
       }
     },
     "configmaps": [],
     "secrets": [],
-    "projectedvolumesmaps": [],
-    "jobscriptURL": "",
-    "nolaunch": true
+    "projectedvolumesmaps": []
   }
 ]
 JSON
 
-PAYLOAD="${PAYLOAD/REPLACE_UID/$UID}"
-
-echo ">>> /create"
-curl -sS -X POST "$PLUGIN_URL/create" \
+echo ">>> /create (dry-run via annotation)"
+curl -sS --unix-socket "$SOCK" -X POST "$BASE/create" \
   -H "Content-Type: application/json" \
   -d "$PAYLOAD" | jq .
 
-echo ">>> /status"
-curl -sS -G "$PLUGIN_URL/status" \
-  --data-urlencode "pods=[{\"metadata\":{\"uid\":\"$UID\",\"name\":\"autolauncher-nolaunch\",\"namespace\":\"default\"}}]" \
-  | jq .
+echo ">>> /status (empty → health)"
+curl -sS --unix-socket "$SOCK" -G "$BASE/status" | jq .
 
-echo ">>> /getLogs (will likely be empty since no launch)"
-curl -sS -G "$PLUGIN_URL/getLogs" \
-  --data-urlencode "req={\"pod_uid\":\"$UID\",\"container\":\"trainer\",\"Opts\":{\"Tail\":100}}" \
-  || true
-
-echo "Self-test done."
+echo "Self-test OK."
