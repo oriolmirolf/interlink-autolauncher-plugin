@@ -1,6 +1,5 @@
-fastapi==0.111.0
-uvicorn[standard]==0.30.1
-pydantic==2.8.2
-paramiko==3.4.0
-python-dateutil==2.9.0.post0
-pyyaml==6.0.1
+vicorn[standard]==0.30.6
+fastapi==0.114.1
+# install latest SDK from Git (interLink 0.5.x)
+# you can pin a tag/commit if you prefer
+git+https://github.com/interlink-hq/interlink-plugin-sdk

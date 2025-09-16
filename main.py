@@ -1,198 +1,349 @@
-from fastapi import FastAPI, Body, HTTPException, Query
+import os
+import re
+import json
+import shutil
+import subprocess
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+
+import interlink
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, ConfigDict
-from typing import List, Union
 
-from autolauncher_adapter import AutolauncherAdapter
-from plugin_state import PluginState
+from settings import Settings
+from slurm_utils import SlurmClient
+from state import StateDB
 
-import logging, traceback
-log = logging.getLogger("autolauncher")
-
-app = FastAPI(debug=True)
-state = PluginState()
-adapter = AutolauncherAdapter(state)
+app = FastAPI(title="interlink-autolauncher-plugin")
 
 
-# ---- Pydantic base that tolerates extra fields from InterLink ----
-class APIModel(BaseModel):
-    model_config = ConfigDict(extra='ignore')
+class AutolauncherProvider(interlink.provider.Provider):
+    """Provider that delegates execution to your autolauncher.py and SLURM."""
+
+    def __init__(self, settings: Settings):
+        super().__init__()
+        self.s = settings
+        self.state = StateDB(self.s.STATE_FILE)
+        self.slurm = SlurmClient(self.s)
+        Path(self.s.LOCAL_STAGING_DIR).mkdir(parents=True, exist_ok=True)
+
+    # ------------- interLink Provider API -------------
+    def create(self, pod: interlink.Pod) -> None:
+        meta = pod.pod.metadata
+        spec = pod.pod.spec
+        c = spec.containers[0]
+
+        # 1) Resolve configuration from annotations + env defaults + container fields
+        cfg = self._build_autolauncher_config(pod)
+
+        # 2) Decide remote JSON path and filenames
+        pod_uid_short = meta.uid[:8]
+        job_name = cfg.get("job_name") or f"{meta.name}-{pod_uid_short}"
+        job_name = self._sanitize(job_name)
+        cfg["job_name"] = job_name
+
+        # Make output/launcher filenames deterministic for log streaming
+        output_base = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{job_name}"
+        if "output_dir" not in cfg:
+            cfg["output_dir"] = str(Path(cfg["workdir"]) / "output")
+        if "launchers_dir" not in cfg:
+            cfg["launchers_dir"] = str(Path(cfg["workdir"]) / "launchers")
+        cfg["output_filename"] = str(Path(cfg["output_dir"]) / (output_base + "_out"))
+        cfg["error_filename"] = str(Path(cfg["output_dir"]) / (output_base + "_err"))
+
+        # 3) Persist JSON (local staging) and copy to remote (or local if edge has GPFS)
+        local_json = Path(self.s.LOCAL_STAGING_DIR) / f"{meta.uid}.json"
+        local_json.parent.mkdir(parents=True, exist_ok=True)
+        with open(local_json, "w") as f:
+            json.dump(cfg, f, indent=2)
+
+        remote_json = self._to_remote_path(local_json)
+        self._push_file(local_json, remote_json)
+
+        # 4) Invoke autolauncher
+        cmd = self._autolaunch_cmd(remote_json, cfg)
+        rc, out, err = self._run(cmd)
+        if rc != 0:
+            raise HTTPException(status_code=500, detail=f"autolauncher failed: {err or out}")
+
+        # 5) Parse Job ID (SLURM) when available
+        job_id = self._parse_job_id(out)
+
+        # 6) Save state
+        self.state.set(meta.uid, {
+            "jid": job_id,
+            "name": meta.name,
+            "namespace": meta.namespace,
+            "job_name": job_name,
+            "cluster": cfg.get("cluster"),
+            "workdir": cfg.get("workdir"),
+            "output": cfg.get("output_filename") + ".txt",
+            "error": cfg.get("error_filename") + ".txt",
+            "launcher": cfg.get("launcher_filepath", ""),
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        })
+
+    def delete(self, pod: interlink.PodRequest) -> None:
+        info = self.state.get(pod.metadata.uid)
+        if not info:
+            raise HTTPException(status_code=404, detail="Pod UID unknown")
+
+        jid = info.get("jid")
+        if jid:
+            rc, out, err = self._run(self.slurm.scancel(jid))
+            if rc != 0:
+                # If already gone, accept as deleted
+                if not self._already_deleted(err + out):
+                    raise HTTPException(status_code=500, detail=f"scancel failed: {err or out}")
+
+        # best-effort: keep logs, drop mapping
+        self.state.delete(pod.metadata.uid)
+
+    def status(self, pod: interlink.PodRequest) -> interlink.PodStatus:
+        info = self.state.get(pod.metadata.uid)
+        if not info:
+            raise HTTPException(status_code=404, detail="Pod UID unknown")
+
+        # Default container status
+        def base_status(state):
+            return interlink.PodStatus(
+                name=pod.metadata.name,
+                UID=pod.metadata.uid,
+                namespace=pod.metadata.namespace,
+                containers=[interlink.ContainerStatus(
+                    name=pod.metadata.name,
+                    state=state
+                )]
+            )
+
+        jid = info.get("jid")
+        if not jid:
+            # No SLURM job id (e.g., local run) — infer from logs
+            term = interlink.StateTerminated(reason="Completed (no JID)", exitCode=0)
+            return base_status(interlink.ContainerStates(running=None, waiting=None, terminated=term))
+
+        s = self.slurm.query_state(jid)
+        if s.state == "RUNNING":
+            run = interlink.StateRunning(started_at=s.started_at)
+            return base_status(interlink.ContainerStates(running=run, waiting=None, terminated=None))
+        elif s.state in {"PENDING", "CONFIGURING", "COMPLETING"}:
+            wait = interlink.StateWaiting(reason=s.state, message=s.reason)
+            return base_status(interlink.ContainerStates(running=None, waiting=wait, terminated=None))
+        else:
+            # Completed/Failed/Cancelled/Timeout
+            code = 0 if s.state == "COMPLETED" else (s.exit_code or 1)
+            term = interlink.StateTerminated(reason=s.state, exitCode=code)
+            return base_status(interlink.ContainerStates(running=None, waiting=None, terminated=term))
+
+    def Logs(self, req: interlink.LogRequest) -> bytes:
+        info = self.state.get(req.pod_uid)
+        if not info:
+            raise HTTPException(status_code=404, detail="Pod UID unknown")
+
+        # Choose stdout by default; allow container name suffix "stderr" to force err file
+        path = info.get("output")
+        if req.container and req.container.endswith(":stderr"):
+            path = info.get("error")
+
+        try:
+            content = self._read_remote_file(path)
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f"Log not found: {path}: {e}")
+
+        # Tail if requested
+        tail = getattr(req.Opts, 'Tail', None) if req.Opts else None
+        if tail and isinstance(tail, int):
+            lines = content.splitlines()[-tail:]
+            return ("\n".join(lines)).encode()
+        return content.encode()
+
+    # ------------- helpers -------------
+    def _build_autolauncher_config(self, pod: interlink.Pod) -> Dict[str, Any]:
+        meta = pod.pod.metadata
+        spec = pod.pod.spec
+        cnt = spec.containers[0]
+        ann = meta.annotations or {}
+
+        def a(key: str, default: Optional[str] = None):
+            return ann.get(f"autolauncher.interlink/{key}", default)
+
+        # Command mapping
+        binary = a("binary", self.s.DEFAULT_BINARY)
+        command, args = self._derive_command_and_args(cnt, a("command"), a("args"))
+
+        # Core config
+        cfg: Dict[str, Any] = {
+            "cluster": a("cluster", self.s.DEFAULT_CLUSTER),
+            "workdir": a("workdir", self.s.DEFAULT_WORKDIR),
+            "containerdir": a("containerdir", self.s.DEFAULT_CONTAINERDIR),
+            "singularity_version": a("singularityVersion", self.s.DEFAULT_SINGULARITY_VERSION),
+            "binary": binary,
+            "command": command,
+            "args": args,
+            "add_commit_tag": self._to_bool(a("addCommitTag", str(self.s.DEFAULT_ADD_COMMIT_TAG).lower())),
+            "use_code_in_gpfs": self._to_bool(a("useCodeInGPFS", str(self.s.DEFAULT_USE_CODE_IN_GPFS).lower())),
+            # SLURM resources (allow overrides via annotations)
+            "qos": a("qos", self.s.DEFAULT_QOS),
+            "time": a("walltime", self.s.DEFAULT_WALLTIME),
+            "ntasks": int(a("ntasks", str(self.s.DEFAULT_NTASKS))),
+            "cpus-per-task": int(a("cpusPerTask", str(self.s.DEFAULT_CPUS_PER_TASK))),
+        }
+
+        # Optional flags
+        for k in ["nodes", "tasks-per-node", "exclusive", "highmem", "gres"]:
+            v = a(k)
+            if v is not None:
+                if k in {"exclusive", "highmem"}:
+                    cfg[k] = self._to_bool(v)
+                elif k in {"gres", "nodes", "tasks-per-node"}:
+                    try:
+                        cfg[k] = int(v)
+                    except ValueError:
+                        cfg[k] = v
+                else:
+                    cfg[k] = v
+
+        # Extra Singularity/Docker binds
+        binds = a("binds")
+        if binds:
+            # Comma-separated list of "src:dst" entries
+            cfg["bindings_list"] = [b.strip() for b in binds.split(",") if b.strip()]
+
+        # If resources present in pod, map cpu & gpu to SLURM
+        res = cnt.resources
+        if res and res.limits:
+            # CPU
+            cpu = res.limits.get("cpu") if isinstance(res.limits, dict) else None
+            if cpu:
+                try:
+                    cfg["cpus-per-task"] = int(float(str(cpu).replace("m", "")))
+                except Exception:
+                    pass
+            # GPU
+            for k in ("nvidia.com/gpu", "amd.com/gpu", "gpu"):
+                if k in res.limits:
+                    try:
+                        cfg["gres"] = int(res.limits[k])
+                    except Exception:
+                        cfg["gres"] = res.limits[k]
+
+        return cfg
+
+    def _derive_command_and_args(self, container, ann_command: Optional[str], ann_args: Optional[str]):
+        # Priority: annotations override, else container.command/args
+        if ann_command is not None or ann_args is not None:
+            return ann_command or "", ann_args or ""
+
+        # From container spec
+        cmd = container.command or []
+        args = container.args or []
+        if cmd:
+            if cmd[0] in ("python", "python3"):
+                # We'll set binary accordingly in _build_autolauncher_config
+                return (cmd[1] if len(cmd) > 1 else ""), " ".join(args)
+            else:
+                # Treat whole command as the script, keep args
+                return " ".join(cmd), " ".join(args)
+        return "", " ".join(args)
+
+    def _autolaunch_cmd(self, remote_json: str, cfg: Dict[str, Any]) -> List[str]:
+        # We call: python autolauncher.py -f <json>
+        launcher = self.s.AUTOLAUNCHER_PATH
+        pybin = self.s.PYTHON_BIN
+        return self._remote_cmd([pybin, launcher, "-f", remote_json])
+
+    def _parse_job_id(self, output: str) -> Optional[str]:
+        # Typical sbatch response contains: "Submitted batch job 123456"
+        m = re.search(r"Submitted batch job (\d+)", output)
+        if m:
+            return m.group(1)
+        # Fallback: look for integer on its own line
+        m = re.search(r"\b(\d{5,})\b", output)
+        return m.group(1) if m else None
+
+    # ------ process / file ops (local or over SSH) ------
+    def _remote_cmd(self, base: List[str]) -> List[str]:
+        if self.s.SSH_DEST:
+            # Wrap into ssh bash -lc "..."
+            joined = " ".join([shlex_quote(x) for x in base])
+            return ["ssh", self.s.SSH_DEST, "bash", "-lc", joined]
+        return base
+
+    def _run(self, cmd: List[str]):
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            out = (p.stdout or "").strip()
+            err = (p.stderr or "").strip()
+            return p.returncode, out, err
+        except Exception as e:
+            return 1, "", str(e)
+
+    def _push_file(self, local: Path, remote_path: str):
+        if self.s.SSH_DEST:
+            # copy via scp to remote_path
+            remote_dir = os.path.dirname(remote_path)
+            self._run(["ssh", self.s.SSH_DEST, "mkdir", "-p", remote_dir])
+            rc, out, err = self._run(["scp", str(local), f"{self.s.SSH_DEST}:{remote_path}"])
+            if rc != 0:
+                raise HTTPException(status_code=500, detail=f"scp failed: {err or out}")
+        else:
+            # local move into GPFS-visible path
+            dest = Path(remote_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(local, dest)
+
+    def _to_remote_path(self, local_staged: Path) -> str:
+        # Place the JSON next to the workdir (fast & visible by autolauncher)
+        p = Path(self.s.DEFAULT_WORKDIR) / "launchers" / f"{local_staged.stem}.json"
+        return str(p)
+
+    def _read_remote_file(self, remote_path: str) -> str:
+        if self.s.SSH_DEST:
+            rc, out, err = self._run(["ssh", self.s.SSH_DEST, "cat", remote_path])
+            if rc != 0:
+                raise RuntimeError(err or out)
+            return out
+        else:
+            with open(remote_path, "r", errors="replace") as f:
+                return f.read()
+
+    def _already_deleted(self, s: str) -> bool:
+        s = (s or "").lower()
+        return any(x in s for x in ["invalid job id", "not found", "already completed", "slurmdbd" ])
+
+    def _sanitize(self, name: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9_.-]", "-", name)[:120]
+
+    def _to_bool(self, v: Any) -> bool:
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-# ---- Models ----
-class Metadata(APIModel):
-    name: str | None = None
-    namespace: str | None = None
-    uid: str | None = None
-    annotations: dict[str, str] | None = None
+# Instantiate provider with settings
+settings = Settings.from_env()
+provider = AutolauncherProvider(settings)
 
 
-class Container(APIModel):
-    name: str
-    image: str
-    # InterLink may send strings; accept both list and str
-    command: list[str] | str | None = None
-    args: list[str] | str | None = None
+# ---------------- FastAPI endpoints ----------------
+@app.post("/create")
+async def create_pod(pods: List[interlink.Pod]) -> List[interlink.CreateStruct]:
+    return provider.create_pod(pods)
 
+@app.post("/delete")
+async def delete_pod(pod: interlink.PodRequest) -> str:
+    return provider.delete_pod(pod)
 
-class PodSpec(APIModel):
-    containers: List[Container]
-    initContainers: List[Container] | None = None
-
-
-class PodRequest(APIModel):
-    metadata: Metadata
-    spec: PodSpec
-
-
-class Volume(APIModel):
-    name: str
-
-
-class Pod(APIModel):
-    pod: PodRequest
-    container: List[Volume] = []
-
-
-class StateRunning(APIModel):
-    startedAt: str | None = None
-
-
-class StateTerminated(APIModel):
-    exitCode: int
-    reason: str | None = None
-
-
-class StateWaiting(APIModel):
-    reason: str | None = None
-    message: str | None = None
-
-
-class ContainerStates(APIModel):
-    terminated: StateTerminated | None = None
-    running: StateRunning | None = None
-    waiting: StateWaiting | None = None
-
-
-class ContainerStatus(APIModel):
-    name: str
-    state: ContainerStates
-
-
-class PodStatus(APIModel):
-    name: str
-    UID: str
-    JID: str | None = None
-    namespace: str
-    containers: List[ContainerStatus]
-
-
-class CreateStruct(APIModel):
-    PodUID: str
-    PodJID: str
-
-
-class LogOpts(APIModel):
-    Tail: int | None = None
-    LimitBytes: int | None = None
-    Timestamps: bool | None = None
-    Previous: bool = False
-
-
-class LogRequest(APIModel):
-    Namespace: str
-    PodUID: str
-    PodName: str
-    ContainerName: str
-    Opts: LogOpts
-
-
-# ----- Helpers -----
-def _uids_from_query(uid_param: List[str] | None) -> List[str]:
-    """Support ?uid=a&uid=b and ?uid=a,b forms. Empty/None -> []."""
-    out: List[str] = []
-    if not uid_param:
-        return out
-    for u in uid_param:
-        out.extend([p.strip() for p in u.split(",") if p.strip()])
-    return out
-
-
-# ----- Routes required by the guide -----
-@app.post("/create", response_model=List[CreateStruct])
-def create_pod(pods: Union[List[Pod], Pod]):
-    """
-    Accept either a single Pod object or a list of Pod objects.
-    """
-    try:
-        pods_list = pods if isinstance(pods, list) else [pods]
-        return adapter.create(pods_list)
-    except Exception as e:
-        logging.getLogger("autolauncher").error("Create failed", exc_info=True)
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/delete", response_model=str)
-def delete_pod(pod: PodRequest):
-    try:
-        adapter.delete(pod)
-        return "OK"
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/status", response_model=List[PodStatus])
-def status_pod_get(uid: List[str] | None = Query(None, description="Repeat ?uid=x&uid=y or CSV ?uid=x,y")):
-    """
-    If no uid is provided (virtual-kubelet ping), return an empty list with 200 OK.
-    """
-    try:
-        uids = _uids_from_query(uid)
-        if not uids:
-            return []
-        pods_minimal = [PodRequest(metadata=Metadata(uid=u), spec=PodSpec(containers=[])) for u in uids]
-        return adapter.status(pods_minimal)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+@app.get("/status")
+async def status_pod(pods: List[interlink.PodRequest]) -> List[interlink.PodStatus]:
+    return provider.get_status(pods)
 
 @app.get("/getLogs", response_class=PlainTextResponse)
-def get_logs_get(
-    uid: str = Query(..., description="Pod UID"),
-    containerName: str | None = Query(None),
-    tail: int | None = Query(None),
-    timestamps: bool = Query(False),
-    previous: bool = Query(False),
-    limitBytes: int | None = Query(None),
-    namespace: str | None = Query(None),
-    podName: str | None = Query(None),
-):
-    try:
-        info = state.get(uid) or {}
-        req = LogRequest(
-            Namespace=namespace or info.get("namespace", "default"),
-            PodUID=uid,
-            PodName=podName or info.get("name", ""),
-            ContainerName=containerName or info.get("container_name", ""),
-            Opts=LogOpts(
-                Tail=tail,
-                LimitBytes=limitBytes,
-                Timestamps=timestamps,
-                Previous=previous,
-            ),
-        )
-        return adapter.get_logs(req)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ----- Extras -----
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+async def get_logs(req: interlink.LogRequest) -> bytes:
+    return provider.get_logs(req)
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
