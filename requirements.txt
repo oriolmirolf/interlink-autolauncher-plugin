@@ -1,4 +1,4 @@
-vicorn[standard]==0.30.6
+uvicorn[standard]==0.30.6
 fastapi==0.114.1
 # install latest SDK from Git (interLink 0.5.x)
 # you can pin a tag/commit if you prefer

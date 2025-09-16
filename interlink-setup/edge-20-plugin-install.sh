@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLUGIN_DIR="/opt/interlink-autolauncher-plugin"
+PLUGIN_DIR="/home/ubuntu/interlink-autolauncher-plugin"
 PYENV="$PLUGIN_DIR/.venv"
 
 # ---- EDIT these to your AMD login + paths ----

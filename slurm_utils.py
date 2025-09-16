@@ -56,10 +56,18 @@ class SlurmClient:
         return SlurmState(state="COMPLETED")
 
     # ---------- helpers ----------
+    def _sshwrap(self, base):
+        import os
+        use = os.getenv("IL_SSH_USE_SSHPASS", "0").lower() in ("1", "true", "yes")
+        pw  = os.getenv("IL_SSH_PASS", "")
+        if self.s.SSH_DEST and use and pw:
+            return ["sshpass", "-p", pw] + base
+        return base
+
     def _wrap(self, base: List[str]) -> List[str]:
         if self.s.SSH_DEST:
             joined = " ".join([shlex_quote(x) for x in base])
-            return ["ssh", self.s.SSH_DEST, "bash", "-lc", joined]
+            return self._sshwrap(["ssh", self.s.SSH_DEST, "bash", "-lc", joined])
         return base
 
     def _run(self, cmd: List[str]):

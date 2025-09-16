@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from settings import Settings
-from slurm_utils import SlurmClient
+from slurm_utils import SlurmClient, shlex_quote
 from state import StateDB
 
 app = FastAPI(title="interlink-autolauncher-plugin")
@@ -263,11 +263,19 @@ class AutolauncherProvider(interlink.provider.Provider):
         return m.group(1) if m else None
 
     # ------ process / file ops (local or over SSH) ------
+    def _sshwrap(self, base):
+        import os
+        use = os.getenv("IL_SSH_USE_SSHPASS", "0").lower() in ("1", "true", "yes")
+        pw  = os.getenv("IL_SSH_PASS", "")
+        if self.s.SSH_DEST and use and pw:
+            return ["sshpass", "-p", pw] + base
+        return base
+
     def _remote_cmd(self, base: List[str]) -> List[str]:
         if self.s.SSH_DEST:
             # Wrap into ssh bash -lc "..."
             joined = " ".join([shlex_quote(x) for x in base])
-            return ["ssh", self.s.SSH_DEST, "bash", "-lc", joined]
+            return self._sshwrap(["ssh", self.s.SSH_DEST, "bash", "-lc", joined])
         return base
 
     def _run(self, cmd: List[str]):
