@@ -1,0 +1,46 @@
+# Autolauncher plugin configuration
+# Copy this file to /etc/autolauncher-plugin/config.yaml and edit.
+hpc:
+  # BSC login node for AMD-CTE
+  login_host: amdlogin1.bsc.es
+  # Will be asked by the bootstrap script; can be left blank
+  user: ""
+  # Base working directory in GPFS where jobs will be staged (one subdir per pod UID)
+  remote_base_dir: "/gpfs/projects/bsc70/INTERLINK/jobs"
+  # Choose cluster profile for Autolauncher: amd | mn4 | p9 | local
+  cluster: "amd"
+  # Autolauncher singularity version (only used by mn4/p9)
+  singularity_version: "3.6.4"
+  # Modules to load before running (amd profile already loads rocm & singularity)
+  module_init: "module load rocm singularity"
+  # Default SLURM options if not provided via pod resources/annotations
+  default_qos: "debug"
+  default_time: "00:30:00"
+  default_ntasks: 1
+  default_cpus_per_task: 8
+  default_gres: 1
+  # Additional Singularity bind mounts
+  extra_bindings:
+    - "/gpfs/projects/bsc70/hpai/storage/data/:/gpfs/projects/bsc70/hpai/storage/data/"
+  # Optional: map k8s image names to local Singularity images on GPFS
+  image_map:
+    "docker.io/library/busybox:latest": "/gpfs/projects/bsc70/containers/busybox.sif"
+    "docker.io/library/python:3.11": "/gpfs/projects/bsc70/containers/python_3_11.sif"
+
+plugin:
+  # Where the plugin HTTP server listens (InterLink API server will call this)
+  bind_host: "127.0.0.1"
+  port: 8001
+  # Persistent state path for UID->SLURM job ID map
+  state_path: "/var/lib/autolauncher-plugin/state.json"
+  # Log directory (the plugin itself)
+  log_dir: "/var/log/autolauncher-plugin"
+
+ssh:
+  # Extra SSH options appended to every ssh/scp call
+  extra_args: "-o StrictHostKeyChecking=accept-new"
+  # Use system ssh-agent and keys; the bootstrap will help copy your key to BSC
+  key_path: "~/.ssh/id_ed25519"
+
+# Optional: override node name advertised by Virtual Kubelet (must match installer.yaml kubelet_node_name)
+vk_node_name: "amd-cte-node"

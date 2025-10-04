@@ -1,0 +1,21 @@
+[Unit]
+Description=InterLink Autolauncher Plugin
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Environment=AUTOLAUNCHER_PLUGIN_CONFIG=/etc/autolauncher-plugin/config.yaml
+WorkingDirectory=/opt/interlink-autolauncher-plugin
+ExecStart=/opt/interlink-autolauncher-plugin/.venv/bin/uvicorn plugin.main:app --host 127.0.0.1 --port 8001
+Restart=on-failure
+RestartSec=2s
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

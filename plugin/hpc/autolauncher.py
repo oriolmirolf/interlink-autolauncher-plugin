@@ -32,8 +32,7 @@ class LauncherWriter(object):
         self.configuration = configuration
 
     def launcher_code(self):
-        return '\n'.join(self.launcher_headers()) + '\n\n' + \
-               '\n'.join(self.launcher_command()) + '\n'
+        return '\n'.join(self.launcher_headers()) + '\n\n' +                '\n'.join(self.launcher_command()) + '\n'
 
     @abstractmethod
     def launcher_headers(self):
@@ -53,10 +52,7 @@ class LauncherWriter(object):
 
     def python_command(self):
         args = self.configuration.get('args', '')
-        command = \
-            self.configuration['workdir'] + "/" + self.configuration['command'] \
-            if self.configuration['use_code_in_gpfs'] \
-            else self.configuration['command']
+        command =             self.configuration['workdir'] + "/" + self.configuration['command']             if self.configuration['use_code_in_gpfs']             else self.configuration['command']
         commit_tag = "commit_tag=" + self.ctag() if self.configuration['add_commit_tag'] else ""
 
         python_command = self.configuration['binary'] + " " + command + " " + args + " " + commit_tag
@@ -124,9 +120,10 @@ class MNLauncherWriter(SlurmLauncherWriter):
         SINGULARITY_BINDINGS_CMD = ''.join(" -B {}".format(bind) for bind in SINGULARITY_BINDINGS)
         SINGULARITY_WRITABLE_PATH = self.configuration['containerdir']
         extra_flags = self.get_extra_singularity_flags()
-        SINGULARITY_COMMAND = SINGULARITY_PATH + ' exec ' + ' ' + extra_flags + '\\\n' + \
-                              SINGULARITY_BINDINGS_CMD + ' \\\n  --writable ' + \
-                              SINGULARITY_WRITABLE_PATH + ' \\\n  bash -c "' + self.python_command() + '"'
+        SINGULARITY_COMMAND = SINGULARITY_PATH + ' exec ' + ' ' + extra_flags + '\\
+' +                               SINGULARITY_BINDINGS_CMD + ' \\
+  --writable ' +                               SINGULARITY_WRITABLE_PATH + ' \\
+  bash -c "' + self.python_command() + '"'
 
         command.append(SINGULARITY_COMMAND)
 
@@ -202,11 +199,10 @@ class AMDLauncher(MNLauncherWriter):
         SINGULARITY_WRITABLE_PATH = self.configuration['containerdir']
         extra_flags = self.get_extra_singularity_flags()
 
-        SINGULARITY_COMMAND = \
-            SINGULARITY_PATH + " exec " + extra_flags + " \\\n" + \
-            " " + SINGULARITY_BINDINGS_CMD + " \\\n" + \
-            " --writable " + SINGULARITY_WRITABLE_PATH + " \\\n" + \
-            " bash -c \"" + self.python_command() + "\""
+        SINGULARITY_COMMAND =             SINGULARITY_PATH + " exec " + extra_flags + " \\
+" +             " " + SINGULARITY_BINDINGS_CMD + " \\
+" +             " --writable " + SINGULARITY_WRITABLE_PATH + " \\
+" +             " bash -c \"" + self.python_command() + "\""
 
         command.append(SINGULARITY_COMMAND)
 
@@ -245,21 +241,7 @@ class MiniNLauncherWriter(LauncherWriter):
         SINGULARITY_BIND_PATH = '/gpfs/projects/bsc70/hpai/storage/data/:/gpfs/projects/bsc70/hpai/storage/data/'
         SINGULARITY_WRITABLE_PATH = self.configuration['containerdir']
         extra_flags = self.get_extra_singularity_flags()
-        SINGULARITY_COMMAND = SINGULARITY_PATH + ' run ' + '--gpus all ' + extra_flags + ' ' + \
-                              '--entrypoint "" ' + \
-                              '-v ' + SINGULARITY_BIND_PATH + ':Z ' + \
-                              '-v /sys/class/powercap:/sys/class/powercap:ro ' + \
-                              '-e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} ' + \
-                              '-e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} ' + \
-                              '-e MINIO_DOMAIN=${MINIO_DOMAIN} ' + \
-                              '-e SSEC_KEY=${SSEC_KEY} ' + \
-                              '-e ZIP_KEY=${ZIP_KEY} ' + \
-                              '-e CI_COMMIT_SHORT_SHA=${CI_COMMIT_SHORT_SHA} ' + \
-                              SINGULARITY_WRITABLE_PATH + ' bash -c ' + \
-                              '"mkdir -p ' + self.configuration['workdir'] + '/output/ && ' + \
-                              self.python_command() + \
-                              ' > ' + self.configuration['output_filename'] + '_out.txt ' + \
-                              '2>' + self.configuration['error_filename'] + '_err.txt"'
+        SINGULARITY_COMMAND = SINGULARITY_PATH + ' run ' + '--gpus all ' + extra_flags + ' ' +                               '--entrypoint "" ' +                               '-v ' + SINGULARITY_BIND_PATH + ':Z ' +                               '-v /sys/class/powercap:/sys/class/powercap:ro ' +                               '-e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} ' +                               '-e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} ' +                               '-e MINIO_DOMAIN=${MINIO_DOMAIN} ' +                               '-e SSEC_KEY=${SSEC_KEY} ' +                               '-e ZIP_KEY=${ZIP_KEY} ' +                               '-e CI_COMMIT_SHORT_SHA=${CI_COMMIT_SHORT_SHA} ' +                               SINGULARITY_WRITABLE_PATH + ' bash -c ' +                               '"mkdir -p ' + self.configuration['workdir'] + '/output/ && ' +                               self.python_command() +                               ' > ' + self.configuration['output_filename'] + '_out.txt ' +                               '2>' + self.configuration['error_filename'] + '_err.txt"'
 
 
         command.append(SINGULARITY_COMMAND)
@@ -276,7 +258,7 @@ class MiniNLauncherWriter(LauncherWriter):
             return ''
         else:
             return '-d'
-        
+
 LAUNCHER_WRITERS = {'mn4': MNLauncherWriter,
                     'p9': P9LauncherWriter,
                     'local': MiniNLauncherWriter,
