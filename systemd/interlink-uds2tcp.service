@@ -1,0 +1,10 @@
+[Unit]
+Description=Expose interLink UNIX socket over TCP (30433)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/socat TCP-LISTEN:30433,reuseaddr,fork UNIX-CONNECT=%h/.interlink/.interlink.sock
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

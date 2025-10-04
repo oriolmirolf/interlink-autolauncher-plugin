@@ -52,38 +52,27 @@ class AutolauncherBackend:
         return workdir, outdir, launchers
 
     def deploy_autolauncher_if_missing(self, local_autolauncher_py: str) -> None:
-        # ensure remote directory
         self.ssh.run("mkdir -p ~/.autolauncher")
-        # copy only if missing or different
-        self.ssh.run("test -f ~/.autolauncher/autolauncher.py || echo missing", check=False)
         self.ssh.scp_put(local_autolauncher_py, "~/.autolauncher/autolauncher.py")
 
     def stage_job_json(self, pod_uid: str, params: dict) -> str:
         workdir, _, _ = self.ensure_remote_layout(pod_uid)
         remote_json = f"{workdir}/job.json"
-        # Write to a temp file locally
         import tempfile, json, os
         fd, tmp = tempfile.mkstemp(prefix="job_", suffix=".json")
         with os.fdopen(fd, "w") as f:
             json.dump(params, f, indent=2)
-        # Copy up and remove temp
         self.ssh.scp_put(tmp, remote_json)
         os.remove(tmp)
         return remote_json
 
     def submit(self, remote_json: str, cluster: str) -> Tuple[bool, Optional[str], str]:
-        """
-        Run autolauncher to submit the job; return (ok, jobid, raw_output)
-        """
         cmd = f"python3 {self.autolauncher_path} -f {shlex.quote(remote_json)} --cluster {shlex.quote(cluster)}"
         proc = self.ssh.run(cmd, check=False)
         out = (proc.stdout or "") + (proc.stderr or "")
-        # Parse SLURM job id from "Submitted batch job 12345"
         m = re.search(r"Submitted batch job\s+(\d+)", out)
         if m:
             return True, m.group(1), out
-        # On 'local' cluster, there is no sbatch; try to extract a PID or fallback
-        m2 = re.search(r"Launcher path: .*", out)
         return False, None, out
 
     def cancel(self, job_id: str) -> str:
@@ -91,27 +80,18 @@ class AutolauncherBackend:
         return (proc.stdout or "") + (proc.stderr or "")
 
     def squeue_state(self, job_id: str) -> Tuple[str, Optional[str]]:
-        """
-        Returns (state, raw) using squeue. If not found, try sacct.
-        """
-        # squeue first (running/pending)
         proc = self.ssh.run(f"squeue -h -j {shlex.quote(job_id)} -o %T", check=False)
         state = (proc.stdout or "").strip()
         raw = (proc.stdout or "") + (proc.stderr or "")
         if state:
             return state, raw
-        # fall back to sacct for completed/failed
         proc = self.ssh.run(f"sacct -n -j {shlex.quote(job_id)} --format=State", check=False)
         state = (proc.stdout or "").strip().splitlines()[0] if (proc.stdout or "").strip() else ""
         raw = (proc.stdout or "") + (proc.stderr or "")
         return state, raw
 
     def read_logs(self, workdir: str, job_id: str, tail: Optional[int] = None, timestamps: bool = False, stream: str = "out") -> str:
-        """
-        Fetch the SLURM out/err log matching the pattern created by autolauncher: {output_filename}_%j_out.txt
-        """
         suffix = "out" if stream != "err" else "err"
-        # list newest matching files with job id
         cmd = f"ls -1t {shlex.quote(workdir)}/output/*_{shlex.quote(job_id)}_{suffix}.txt 2>/dev/null | head -n1"
         proc = self.ssh.run(cmd, check=False)
         path = (proc.stdout or "").strip()
@@ -122,4 +102,3 @@ class AutolauncherBackend:
         else:
             cat = self.ssh.run(f"tail -n {int(tail)} {shlex.quote(path)}", check=False)
         return (cat.stdout or "")
-

@@ -6,9 +6,8 @@ from fastapi.responses import PlainTextResponse
 import interlink
 from .provider_autolauncher import AutoLauncherProvider
 
-app = FastAPI(title="InterLink Autolauncher Plugin", version="0.1.0")
+app = FastAPI(title="InterLink Autolauncher Plugin", version="0.2.0")
 
-# Load config
 CONFIG_PATH = os.environ.get("AUTOLAUNCHER_PLUGIN_CONFIG", "/etc/autolauncher-plugin/config.yaml")
 if not os.path.exists(CONFIG_PATH):
     raise RuntimeError(f"Config file {CONFIG_PATH} not found. Create it from config.yaml.example")
@@ -37,9 +36,3 @@ async def status_pod(pods: list[interlink.PodRequest]) -> list[interlink.PodStat
 @app.get("/getLogs", response_class=PlainTextResponse)
 async def get_logs(req: interlink.LogRequest):
     return (await provider.get_logs(req)).decode("utf-8")
-
-if __name__ == "__main__":
-    import uvicorn
-    host = cfg.get("plugin", {}).get("bind_host", "127.0.0.1")
-    port = int(cfg.get("plugin", {}).get("port", 8001))
-    uvicorn.run("plugin.main:app", host=host, port=port, reload=False)

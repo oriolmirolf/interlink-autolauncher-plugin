@@ -1,0 +1,10 @@
+[Unit]
+Description=Expose Autolauncher plugin UNIX socket over TCP (8001)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/socat TCP-LISTEN:8001,reuseaddr,fork UNIX-CONNECT=%h/.interlink/.plugin.sock
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
