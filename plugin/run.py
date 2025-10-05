@@ -1,33 +1,33 @@
-import os, yaml
-from uvicorn import run
-from plugin.main import app
+import os
+import sys
+import yaml
+import pathlib
+import uvicorn
 
-CONFIG_PATH = os.environ.get("AUTOLAUNCHER_PLUGIN_CONFIG", "/etc/autolauncher-plugin/config.yaml")
-if not os.path.exists(CONFIG_PATH):
-    raise SystemExit(f"Config file {CONFIG_PATH} not found")
+# Ensure we can import plugin.main
+sys.path.append(str(pathlib.Path(__file__).resolve().parent))
 
-with open(CONFIG_PATH, "r") as f:
-    cfg = yaml.safe_load(f) or {}
+def main():
+    config_path = os.environ.get("AUTOLAUNCHER_PLUGIN_CONFIG", "/etc/autolauncher-plugin/config.yaml")
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f) or {}
+    plugin_cfg = (cfg.get("plugin") or {})
 
-p = cfg.get("plugin", {})
-
-uds = os.path.expanduser(p.get("uds", "~/.interlink/.plugin.sock"))
-bind_host = p.get("bind_host", "127.0.0.1")
-port = int(p.get("port", 8001))
-
-# Ensure directory for UDS
-if uds:
-    try:
+    uds = plugin_cfg.get("uds")  # e.g. "~/.interlink/.plugin.sock"
+    if uds:
+        uds = os.path.expanduser(uds)
+        # Prepare directory and remove stale socket
         os.makedirs(os.path.dirname(uds), exist_ok=True)
-    except Exception:
-        pass
-
-if uds:
-    try:
-        if os.path.exists(uds):
+        try:
             os.remove(uds)
-    except Exception:
-        pass
-    run(app, uds=uds, log_level="info")
-else:
-    run(app, host=bind_host, port=port, log_level="info")
+        except FileNotFoundError:
+            pass
+        uvicorn.run("plugin.main:app", uds=uds, log_level="info")
+        return
+
+    host = plugin_cfg.get("bind_host", "127.0.0.1")
+    port = int(plugin_cfg.get("bind_port", 8001))
+    uvicorn.run("plugin.main:app", host=host, port=port, log_level="info")
+
+if __name__ == "__main__":
+    main()

@@ -1,10 +1,13 @@
 [Unit]
-Description=Expose Autolauncher plugin UNIX socket over TCP (8001)
+Description=Expose interLink UNIX socket over TCP (30433)
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/socat TCP-LISTEN:8001,reuseaddr,fork UNIX-CONNECT=%h/.interlink/.plugin.sock
+Type=simple
+User=%i
+ExecStart=/usr/bin/socat TCP-LISTEN:30433,fork,reuseaddr UNIX-CONNECT=%h/.interlink/.interlink.sock
 Restart=on-failure
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target

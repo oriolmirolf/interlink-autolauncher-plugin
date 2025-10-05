@@ -1,20 +1,27 @@
 [Unit]
 Description=InterLink Autolauncher Plugin
 After=network.target
+Wants=network-online.target
 
 [Service]
 Type=simple
+# bootstrap script rewrites this to the invoking user (e.g., ubuntu)
 User=root
+Group=%U
 Environment=AUTOLAUNCHER_PLUGIN_CONFIG=/etc/autolauncher-plugin/config.yaml
 WorkingDirectory=/opt/interlink-autolauncher-plugin
 ExecStart=/opt/interlink-autolauncher-plugin/.venv/bin/python -m plugin.run
 Restart=on-failure
-RestartSec=2s
-
+RestartSec=2
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
 ProtectSystem=full
 ProtectHome=false
+AmbientCapabilities=
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target

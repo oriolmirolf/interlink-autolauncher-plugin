@@ -113,6 +113,97 @@ class AutoLauncherProvider(interlink.provider.Provider):
             "qos": qos,
             "time": time_str
         }
+    
+    def get_status_uids(self, pod_uids: list[str]) -> list[interlink.PodStatus]:
+        """
+        Compute status for a list of UIDs (supports InterLink calling /status?pod_uid=...).
+        Uses persisted state + backend.squeue_state / sacct mapping.
+        """
+        out: list[interlink.PodStatus] = []
+        for uid in pod_uids:
+            st = getattr(self, "state", {}).get(uid) if hasattr(self, "state") else None
+            name = st.get("name") if st else ""
+            ns = st.get("namespace") if st else ""
+            if not st:
+                out.append(
+                    interlink.PodStatus(
+                        name=name, UID=uid, namespace=ns,
+                        containers=[
+                            interlink.ContainerStatus(
+                                name="container",
+                                state=interlink.ContainerStates(
+                                    running=None,
+                                    waiting=None,
+                                    terminated=interlink.StateTerminated(
+                                        reason="Unknown", exitCode=1
+                                    ),
+                                ),
+                            )
+                        ],
+                    )
+                )
+                continue
+
+            try:
+                state, _raw = self.backend.squeue_state(st["job_id"])  # (STATE, raw)
+            except Exception:
+                state = "Unknown"
+
+            if state in ("RUNNING", "COMPLETING"):
+                out.append(
+                    interlink.PodStatus(
+                        name=name, UID=uid, namespace=ns,
+                        containers=[
+                            interlink.ContainerStatus(
+                                name="container",
+                                state=interlink.ContainerStates(
+                                    running=interlink.StateRunning(
+                                        started_at=datetime.utcnow().isoformat()
+                                    ),
+                                    waiting=None,
+                                    terminated=None,
+                                ),
+                            )
+                        ],
+                    )
+                )
+            elif state in ("PENDING", "CONFIGURING", "RESIZING"):
+                out.append(
+                    interlink.PodStatus(
+                        name=name, UID=uid, namespace=ns,
+                        containers=[
+                            interlink.ContainerStatus(
+                                name="container",
+                                state=interlink.ContainerStates(
+                                    running=None,
+                                    waiting=interlink.StateWaiting(reason=state),
+                                    terminated=None,
+                                ),
+                            )
+                        ],
+                    )
+                )
+            else:
+                exit_code = 0 if state == "COMPLETED" else 1
+                out.append(
+                    interlink.PodStatus(
+                        name=name, UID=uid, namespace=ns,
+                        containers=[
+                            interlink.ContainerStatus(
+                                name="container",
+                                state=interlink.ContainerStates(
+                                    running=None,
+                                    waiting=None,
+                                    terminated=interlink.StateTerminated(
+                                        reason=state, exitCode=exit_code
+                                    ),
+                                ),
+                            )
+                        ],
+                    )
+                )
+        return out
+
 
     def create(self, pod: interlink.Pod) -> None:
         container = pod.pod.spec.containers[0]

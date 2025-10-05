@@ -1,37 +1,13 @@
-# Autolauncher plugin configuration
-# Copy this file to /etc/autolauncher-plugin/config.yaml and edit.
-hpc:
-  login_host: amdlogin1.bsc.es
-  user: ""
-  remote_base_dir: "/gpfs/projects/bsc70/INTERLINK/jobs"
-  cluster: "amd"
-  singularity_version: "3.6.4"
-  module_init: "module load rocm singularity"
-  default_qos: "debug"
-  default_time: "00:30:00"
-  default_ntasks: 1
-  default_cpus_per_task: 8
-  default_gres: 1
-  extra_bindings:
-    - "/gpfs/projects/bsc70/hpai/storage/data/:/gpfs/projects/bsc70/hpai/storage/data/"
-  image_map:
-    "docker.io/library/busybox:latest": "/gpfs/projects/bsc70/containers/busybox.sif"
-    "docker.io/library/python:3.11": "/gpfs/projects/bsc70/containers/python_3_11.sif"
-
 plugin:
-  # Serve via UNIX domain socket by default so it matches the interlink-installer output
+  # UDS-first. When running as user 'ubuntu', this becomes /home/ubuntu/.interlink/.plugin.sock
   uds: "~/.interlink/.plugin.sock"
-  # If you prefer TCP instead, comment the line above and use:
-  bind_host: "127.0.0.1"
-  port: 8001
 
-  # Persistent state path for UID->SLURM job ID map
-  state_path: "/var/lib/autolauncher-plugin/state.json"
-  # Log directory (the plugin itself)
-  log_dir: "/var/log/autolauncher-plugin"
+  # If you want TCP instead of a unix socket, comment 'uds' out and set:
+  # bind_host: "127.0.0.1"
+  # bind_port: 8001
 
-ssh:
-  extra_args: "-o StrictHostKeyChecking=accept-new"
-  key_path: "~/.ssh/id_ed25519"
-
-vk_node_name: "autolauncher-edge"
+hpc:
+  # Placeholder section for your AMD-CTE settings (if needed by the provider)
+  # login_host: "amdlogin1.bsc.es"
+  # ssh_user: ""
+  # autolauncher_path: "~/.autolauncher/autolauncher.py"

@@ -1,61 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AUTOLAUNCHER_HOST="${1:-192.168.0.98}"
-AUTOLAUNCHER_USER="${2:-$USER}"
-NODE_NAME="${3:-autolauncher-edge}"
-
-echo "==> Checking kubectl & helm"
-if ! command -v kubectl >/dev/null; then
-  echo "kubectl not found. Please install kubectl first."
+if [[ $# -lt 3 ]]; then
+  echo "Usage: $0 <autolauncher-ip> <ssh-user-on-autolauncher> <node-name>"
   exit 1
 fi
-if ! command -v helm >/dev/null; then
-  echo "Installing helm..."
+
+AL_IP="$1"
+AL_USER="$2"
+NODE_NAME="$3"
+
+echo "==> Installing Helm (if missing)"
+if ! command -v helm >/dev/null 2>&1; then
   curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 fi
 
-echo "==> Fetching Helm values from autolauncher (${AUTOLAUNCHER_USER}@${AUTOLAUNCHER_HOST})"
-mkdir -p /tmp/interlink-values
-scp "${AUTOLAUNCHER_USER}@${AUTOLAUNCHER_HOST}:~/.interlink/manifests/values.yaml" /tmp/interlink-values/values.yaml
+echo "==> Fetching InterLink values.yaml from autolauncher"
+scp -o StrictHostKeyChecking=no "${AL_USER}@${AL_IP}:~/.interlink/manifests/values.yaml" /tmp/interlink-values.yaml
 
-cat >/tmp/interlink-values/override-no-oauth.yaml <<EOF
-nodeName: ${NODE_NAME}
+# Create an override for no-OAuth, REST to autolauncher:30433 and node name
+cat >/tmp/interlink-overrides.yaml <<YAML
 OAUTH:
   enabled: false
 interlink:
-  address: http://${AUTOLAUNCHER_HOST}
+  address: http://${AL_IP}
   port: 30433
-EOF
+nodeName: ${NODE_NAME}
+YAML
 
-echo "==> Install/upgrade InterLink Helm chart (no-OAuth override)"
-export INTERLINK_CHART_VERSION=$(curl -s https://api.github.com/repos/interlink-hq/interlink-helm-chart/releases/latest | jq -r .name)
+echo "==> Installing/Upgrading InterLink Helm chart"
+export INTERLINK_CHART_VERSION=$(helm show chart oci://ghcr.io/interlink-hq/interlink-helm-chart/interlink | awk '/version:/ {print $2}')
 helm upgrade --install \
   --create-namespace \
   -n interlink \
-  ${NODE_NAME} \
+  "${NODE_NAME}" \
   oci://ghcr.io/interlink-hq/interlink-helm-chart/interlink \
-  --version ${INTERLINK_CHART_VERSION} \
-  --values /tmp/interlink-values/values.yaml \
-  --values /tmp/interlink-values/override-no-oauth.yaml
+  --version "${INTERLINK_CHART_VERSION}" \
+  --values /tmp/interlink-values.yaml \
+  --values /tmp/interlink-overrides.yaml
 
-echo "==> Wait for the virtual node to become Ready"
-set +e
-for i in {1..60}; do
-  if kubectl get nodes | grep -q "${NODE_NAME}"; then
-    break
-  fi
-  sleep 3
-done
-set -e
-kubectl get nodes
+echo "==> Waiting for virtual node to appear (this may take a bit)"
+sleep 5
+kubectl get nodes -o wide
 
-echo "==> Apply test pod"
+echo "==> Deploying a tiny test Pod"
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
-  name: test-tunnel
+  name: interlink-smoketest
   namespace: interlink
 spec:
   nodeSelector:
@@ -66,9 +59,9 @@ spec:
   containers:
   - name: test
     image: busybox
-    command: ["sh","-lc"]
-    args: ["echo hello from interlink; sleep 20"]
+    command: ["sh","-lc","echo hello-from-interlink; sleep 10"]
+  restartPolicy: Never
 EOF
 
-echo "==> If logs fail, you may need to approve CSR:"
-echo "kubectl get csr"
+echo "==> Pod status:"
+kubectl -n interlink get pod interlink-smoketest -o wide
