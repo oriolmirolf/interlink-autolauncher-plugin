@@ -1,23 +1,10 @@
 #!/usr/bin/env bash
-
-## this file:
-# - detects your IP and sets installer.yaml (ip, port=30433, insecure_http: true)
-# - runs interlink-remote.sh install/start
-# - enables a systemd socat bridge InterLink UDS → TCP:30433
-# - asks for your BSC username and sets up SSH keys for amdlogin1.bsc.es
-# - starts the plugin service on ~/.interlink/.plugin.sock
-
 set -euo pipefail
 
-if [[ $(id -u) -ne 0 ]]; then
-  echo "Please run as root (sudo)." >&2
-  exit 1
-fi
+if [[ $(id -u) -ne 0 ]]; then echo "Run with sudo." >&2; exit 1; fi
 
 APT_PKGS=(git jq curl wget python3-venv python3-pip rsync sshpass socat)
-echo "==> Installing prerequisites (Ubuntu)"
-apt-get update -y
-apt-get install -y "${APT_PKGS[@]}"
+apt-get update -y && apt-get install -y "${APT_PKGS[@]}"
 
 PLUGIN_USER="${SUDO_USER:-ubuntu}"
 PLUGIN_HOME="/home/${PLUGIN_USER}"
@@ -33,38 +20,49 @@ INTERLINK_SOCK="${SOCK_DIR}/.interlink.sock"
 mkdir -p "${INSTALL_DIR}" "${CONF_DIR}" "${LOG_DIR}" "${BIN_DIR}" "${MAN_DIR}" "${SOCK_DIR}"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-echo "==> Copying sources (preserve plugin/ package)"
 rsync -a --delete "${REPO_DIR}/plugin" "${INSTALL_DIR}/"
 
-# Default config
-if [[ ! -f "${CONF_DIR}/config.yaml" ]]; then
-  cat > "${CONF_DIR}/config.yaml" <<'YAML'
-# Autolauncher plugin configuration
-bind:
-  uds: "~/.interlink/.plugin.sock"
-  # http:
-  #   host: "127.0.0.1"
-  #   port: 8001
-bsc:
-  host: "amdlogin1.bsc.es"
-  user: ""
-autolauncher:
-  remote_path: "~/autolauncher.py"
-YAML
-  chown -R "${PLUGIN_USER}":"${PLUGIN_USER}" "${CONF_DIR}"
-  chmod 640 "${CONF_DIR}/config.yaml"
-  echo "A default config was installed at ${CONF_DIR}/config.yaml — please review."
-fi
+# --- Ask for AMD‑CTE credentials (copies SSH key, uploads autolauncher.py) ---
+read -rp "BSC AMD-CTE username: " BSC_USER
+read -rs -p "Password for ${BSC_USER}@amdlogin1.bsc.es: " BSC_PASS; echo
 
-echo "==> Creating Python venv and installing dependencies"
+sudo -u "${PLUGIN_USER}" bash -lc '[[ -f ~/.ssh/id_rsa ]] || ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa'
+sshpass -p "${BSC_PASS}" ssh-copy-id -o StrictHostKeyChecking=accept-new "${BSC_USER}@amdlogin1.bsc.es"
+
+# Upload patched autolauncher (optional but recommended)
+sshpass -p "${BSC_PASS}" scp -o StrictHostKeyChecking=accept-new \
+  "${INSTALL_DIR}/plugin/hpc/autolauncher.py" \
+  "${BSC_USER}@amdlogin1.bsc.es:~/.autolauncher/autolauncher.py" || true
+
+# --- Install Python deps in venv ---
 python3 -m venv "${INSTALL_DIR}/.venv"
 source "${INSTALL_DIR}/.venv/bin/activate"
 pip install -U pip
 pip install -r "${INSTALL_DIR}/plugin/requirements.txt"
 deactivate
 
-# Systemd service for the plugin (Uvicorn on UDS)
-echo "==> Installing systemd unit"
+# --- Config file with correct keys ---
+cat > "${CONF_DIR}/config.yaml" <<YAML
+plugin:
+  uds: "~/.interlink/.plugin.sock"
+  state_path: "~/.interlink/autolauncher-plugin-state.json"
+
+hpc:
+  login_host: "amdlogin1.bsc.es"
+  user: "${BSC_USER}"
+  cluster: "amd"
+  autolauncher_path: "~/.autolauncher/autolauncher.py"
+  remote_base_dir: "/gpfs/projects/bsc70/INTERLINK/jobs"
+  singularity_version: "3.6.4"
+  module_init: "module load rocm singularity"
+  # Map images to sandboxes if you have them; otherwise plugin will use docker://image read-only
+  image_map: {}
+  extra_bindings: ["/gpfs/projects/bsc70/hpai/storage/data/:/gpfs/projects/bsc70/hpai/storage/data/"]
+YAML
+chown -R "${PLUGIN_USER}:${PLUGIN_USER}" "${CONF_DIR}"
+chmod 640 "${CONF_DIR}/config.yaml"
+
+# --- systemd for plugin (UDS) ---
 cat > /etc/systemd/system/autolauncher-plugin.service <<UNIT
 [Unit]
 Description=InterLink Autolauncher Plugin
@@ -76,27 +74,33 @@ Type=simple
 User=${PLUGIN_USER}
 Group=${PLUGIN_USER}
 Environment=HOME=${PLUGIN_HOME}
+Environment=AUTOLAUNCHER_PLUGIN_CONFIG=${CONF_DIR}/config.yaml
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/.venv/bin/python -m plugin.run
 Restart=always
 RestartSec=2
-RuntimeDirectory=interlink
-RuntimeDirectoryMode=0755
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
+systemctl enable --now autolauncher-plugin
 
-# Prepare interLink remote (UDS) and installer manifests
-echo "==> Installing InterLink remote components (API server)"
-mkdir -p "${BIN_DIR}" "${MAN_DIR}"
-# Pre-fill edge installer YAML with socket mode
+# --- InterLink installer (edge REST, no OAuth for dev) ---
+mkdir -p "${BIN_DIR}"
+if [[ ! -x "${BIN_DIR}/interlink-installer" ]]; then
+  # use latest release
+  V="$(curl -fsSL https://api.github.com/repos/interlink-hq/interLink/releases/latest | jq -r .name)"
+  wget -qO "${BIN_DIR}/interlink-installer" "https://github.com/interlink-hq/interLink/releases/download/${V}/interlink-installer_Linux_x86_64"
+  chmod +x "${BIN_DIR}/interlink-installer"
+fi
+
 cat > "${PLUGIN_HOME}/.interlink/installer.yaml" <<YML
 interlink_ip: 0.0.0.0
 interlink_port: 30433
 insecure_http: true
+interlink_version: "latest"
 kubelet_node_name: autolauncher-edge
 kubernetes_namespace: interlink
 node_limits:
@@ -104,31 +108,26 @@ node_limits:
   memory: 25600
   pods: "100"
 oauth:
-  provider: none
+  provider: oidc
+  issuer: "http://dummy.local/"
+  scopes: ["openid"]
+  audience: "interlink"
+  grant_type: "device_code"
+  group_claim: "groups"
+  group: "dummy"
+  token_url: "http://dummy.local/token"
+  device_code_url: "http://dummy.local/device"
+  client_id: "dummy"
+  client_secret: "dummy"
 YML
 chown -R "${PLUGIN_USER}:${PLUGIN_USER}" "${PLUGIN_HOME}/.interlink"
 
-# Download interLink binary and oauth2-proxy (not used when oauth disabled)
-if [[ ! -x "${BIN_DIR}/interlink" ]]; then
-  curl -fsSL -o "${BIN_DIR}/interlink" https://github.com/interlink-hq/interLink/releases/download/0.5.1/interlink_Linux_x86_64
-  chmod +x "${BIN_DIR}/interlink"
-fi
-
-# Generate remote scripts and values via the installer (no OAuth)
-sudo -u "${PLUGIN_USER}" "${BIN_DIR}/interlink" installer \
-  --config "${PLUGIN_HOME}/.interlink/installer.yaml" \
-  --output-dir "${MAN_DIR}"
-
-# Ensure interLink writes to ${INTERLINK_SOCK}
-sed -i "s|unix://.*/.interlink.sock|unix://${INTERLINK_SOCK}|g" "${PLUGIN_HOME}/.interlink/config/InterLinkConfig.yaml" || true
-
-# Start interLink API (UDS)
-echo "==> Starting InterLink API server (UDS)"
+# create manifests & start remote
+sudo -u "${PLUGIN_USER}" "${BIN_DIR}/interlink-installer" --config "${PLUGIN_HOME}/.interlink/installer.yaml" --output-dir "${MAN_DIR}"
 sudo -u "${PLUGIN_USER}" bash -lc "${MAN_DIR}/interlink-remote.sh stop || true"
 sudo -u "${PLUGIN_USER}" bash -lc "${MAN_DIR}/interlink-remote.sh start"
 
-# UDS→TCP forwarder for the chart (30433)
-echo "==> Installing UDS→TCP forwarder (socat) on 30433"
+# UDS→TCP forwarder for 30433
 cat > /etc/systemd/system/interlink-uds2tcp.service <<SOCK
 [Unit]
 Description=Expose interLink UNIX socket over TCP (30433)
@@ -140,7 +139,7 @@ User=${PLUGIN_USER}
 Environment=HOME=${PLUGIN_HOME}
 Restart=always
 RestartSec=2
-ExecStartPre=/bin/sh -c 'for i in \$(seq 1 60); do [ -S ${INTERLINK_SOCK} ] && exit 0; sleep 1; done; echo "interlink.sock not found" >&2; exit 1'
+ExecStartPre=/bin/sh -c 'for i in \$(seq 1 60); do [ -S ${INTERLINK_SOCK} ] && exit 0; sleep 1; done; exit 1'
 ExecStart=/usr/bin/socat TCP-LISTEN:30433,reuseaddr,fork UNIX-CONNECT:${INTERLINK_SOCK}
 
 [Install]
@@ -150,12 +149,8 @@ SOCK
 systemctl daemon-reload
 systemctl enable --now interlink-uds2tcp
 
-# Start plugin
-echo "==> Enabling and starting autolauncher-plugin service"
-systemctl enable --now autolauncher-plugin
-
-echo "==> Sanity checks"
+# quick health checks
 sudo -u "${PLUGIN_USER}" bash -lc "curl -sf --unix-socket ${PLUGIN_SOCK} http://unix/health >/dev/null" && echo "Plugin OK"
 curl -sf --unix-socket "${INTERLINK_SOCK}" http://unix/pinglink >/dev/null && echo "InterLink OK"
 
-echo "==> Done. Next: run the master-side bootstrap on your K8s master"
+echo "Autolauncher bootstrap complete."
