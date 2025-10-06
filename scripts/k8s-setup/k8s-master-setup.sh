@@ -50,11 +50,19 @@ log "Installing containerd.io"
 sudo mkdir -p /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
  | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
- | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+fi
 
 sudo apt update -y
-sudo apt install -y containerd.io cri-tools
+sudo apt install -y containerd.io
+# Install crictl (cri-tools) from upstream
+CRICTL_VERSION="v1.28.0"
+ARCH="$(dpkg --print-architecture)"
+curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${ARCH}.tar.gz" \
+  | sudo tar -C /usr/local/bin -xz crictl
+
 
 # 5) Configure containerd (SystemdCgroup=true, disabled_plugins=[])
 log "Configuring containerd (SystemdCgroup=true)"
@@ -112,7 +120,7 @@ sudo kubeadm init \
 log "Setting kubeconfig for current user"
 mkdir -p "$HOME/.kube"
 sudo cp -i /etc/kubernetes/admin.conf "$HOME/.kube/config"
-sudo chown "$(id -u)":"(id -g)" "$HOME/.kube/config"
+sudo chown "$(id -u)":"$(id -g)" "$HOME/.kube/config"
 
 # 11) CNI (Weave, per the guide)
 if [ "${USE_WEAVE}" = "true" ]; then

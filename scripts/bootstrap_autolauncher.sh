@@ -25,12 +25,23 @@ rsync -a --delete "${REPO_DIR}/plugin" "${INSTALL_DIR}/"
 # --- Ask for AMD‑CTE credentials (copies SSH key, uploads autolauncher.py) ---
 read -rp "BSC AMD-CTE username: " BSC_USER
 read -rs -p "Password for ${BSC_USER}@amdlogin1.bsc.es: " BSC_PASS; echo
+read -rp "Remote GPFS jobs base dir [/gpfs/projects/bsc70/<your_group>/interlink/jobs]: " HPC_BASE
+HPC_BASE="${HPC_BASE:-/gpfs/projects/bsc70/<your_group>/interlink/jobs}"
+read -rp "Use apptainer instead of singularity? [y/N]: " USE_APPT
+if [[ "${USE_APPT,,}" == "y" ]]; then SING_BIN="apptainer"; MOD_INIT="module load rocm apptainer"; else SING_BIN="singularity"; MOD_INIT="module load rocm singularity"; fi
+
 
 sudo -u "${PLUGIN_USER}" bash -lc '[[ -f ~/.ssh/id_rsa ]] || ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa'
-sshpass -p "${BSC_PASS}" ssh-copy-id -o StrictHostKeyChecking=accept-new "${BSC_USER}@amdlogin1.bsc.es"
+sudo -u "${PLUGIN_USER}" sshpass -p "${BSC_PASS}" \
+  ssh-copy-id -i "/home/${PLUGIN_USER}/.ssh/id_rsa.pub" \
+  -o StrictHostKeyChecking=accept-new \
+  "${BSC_USER}@amdlogin1.bsc.es"
+
 
 # Upload patched autolauncher (optional but recommended)
-sshpass -p "${BSC_PASS}" scp -o StrictHostKeyChecking=accept-new \
+sudo -u "${PLUGIN_USER}" ssh -o StrictHostKeyChecking=accept-new \
+  "${BSC_USER}@amdlogin1.bsc.es" 'mkdir -p ~/.autolauncher'
+sudo -u "${PLUGIN_USER}" scp -o StrictHostKeyChecking=accept-new \
   "${INSTALL_DIR}/plugin/hpc/autolauncher.py" \
   "${BSC_USER}@amdlogin1.bsc.es:~/.autolauncher/autolauncher.py" || true
 
@@ -52,9 +63,10 @@ hpc:
   user: "${BSC_USER}"
   cluster: "amd"
   autolauncher_path: "~/.autolauncher/autolauncher.py"
-  remote_base_dir: "/gpfs/projects/bsc70/INTERLINK/jobs"
+  remote_base_dir: "${HPC_BASE}"
   singularity_version: "3.6.4"
-  module_init: "module load rocm singularity"
+  singularity_binary: "${SING_BIN}"
+  module_init: "${MOD_INIT}"
   # Map images to sandboxes if you have them; otherwise plugin will use docker://image read-only
   image_map: {}
   extra_bindings: ["/gpfs/projects/bsc70/hpai/storage/data/:/gpfs/projects/bsc70/hpai/storage/data/"]
@@ -100,26 +112,16 @@ cat > "${PLUGIN_HOME}/.interlink/installer.yaml" <<YML
 interlink_ip: 0.0.0.0
 interlink_port: 30433
 insecure_http: true
-interlink_version: "latest"
+interlink_version: "0.5.1"
 kubelet_node_name: autolauncher-edge
 kubernetes_namespace: interlink
 node_limits:
   cpu: "1000"
   memory: 25600
   pods: "100"
-oauth:
-  provider: oidc
-  issuer: "http://dummy.local/"
-  scopes: ["openid"]
-  audience: "interlink"
-  grant_type: "device_code"
-  group_claim: "groups"
-  group: "dummy"
-  token_url: "http://dummy.local/token"
-  device_code_url: "http://dummy.local/device"
-  client_id: "dummy"
-  client_secret: "dummy"
+oauth: {}
 YML
+
 chown -R "${PLUGIN_USER}:${PLUGIN_USER}" "${PLUGIN_HOME}/.interlink"
 
 # create manifests & start remote

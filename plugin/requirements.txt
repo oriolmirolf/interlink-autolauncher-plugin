@@ -1,9 +1,9 @@
 # Runtime
-fastapi>=0.111,<0.112
-uvicorn[standard]>=0.30,<0.31
-pydantic>=1.10,<2
+fastapi>=0.114,<1.0
+uvicorn[standard]>=0.30,<0.32
+pydantic>=2.7,<3
 PyYAML>=6.0
 requests>=2.31
 
-# InterLink Python SDK (from GitHub)
+# InterLink Python SDK (latest)
 git+https://github.com/interlink-hq/interlink-plugin-sdk

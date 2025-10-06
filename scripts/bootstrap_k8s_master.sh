@@ -31,8 +31,8 @@ nodeName: ${NODE_NAME}
 YAML
 
 # Try OCI chart first (current release train)
-OCI_CHART="oci://ghcr.io/intertwin-eu/interlink-helm-chart/interlink"
-INTERLINK_CHART_VERSION="\${INTERLINK_CHART_VERSION:-0.5.3}"
+OCI_CHART="oci://ghcr.io/interlink-hq/interlink-helm-chart/interlink"
+INTERLINK_CHART_VERSION="${INTERLINK_CHART_VERSION:-0.5.2}"
 set +e
 helm upgrade --install \
   --create-namespace \
@@ -58,6 +58,9 @@ fi
 
 sleep 5
 kubectl get nodes -o wide || true
+# Avoid kubelet port collision for VK
+kubectl -n interlink set env deploy/${NODE_NAME}-node KUBELET_PORT=20250
+kubectl -n interlink rollout status deploy/${NODE_NAME}-node
 
 # smoke test
 kubectl create namespace interlink --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1 || true
