@@ -143,7 +143,7 @@ class AutolauncherProvider(interlink.provider.Provider):
             "command": inner_cmd,
             "args": "",
             "add_commit_tag": False,
-            "use_code_in_gpfs": True,
+            "use_code_in_gpfs": False,
             "qos": slurm["qos"],
             "time": slurm["time"],
             "ntasks": slurm["ntasks"],
