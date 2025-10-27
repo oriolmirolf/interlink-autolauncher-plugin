@@ -2,8 +2,11 @@
 set -euo pipefail
 
 # ===== Config you may tweak =====
-K8S_MAJOR_MINOR="1.28"
-K8S_VERSION_PIN="${K8S_MAJOR_MINOR}.*"  # pin family
+K8S_MAJOR="1.28"
+K8S_MAJOR_MINOR="${K8S_MAJOR}.15"     # check for the last patch version for your system using `kubeadm config images list --kubernetes-version stable`
+K8S_VERSION_PIN="${K8S_MAJOR}.*"      # pin family
+CRICTL_VERSION="v{$K8S_MAJOR}.0"      # crictl version should be compatible with $K8S_MAJOR
+ARCH="$(dpkg --print-architecture)"   # architecture of K8S master and worker nodes to download dependencies
 # Provide join command by either:
 #   1) exporting JOIN_CMD env var before running, e.g.:
 #      export JOIN_CMD="kubeadm join 192.168.0.249:6443 --token xxx --discovery-token-ca-cert-hash sha256:yyy"
@@ -51,18 +54,24 @@ log "Installing containerd.io"
 sudo mkdir -p /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
  | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
  | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
 
 sudo apt update -y
-sudo apt install -y containerd.io cri-tools
+sudo apt install -y containerd.io
+# Install crictl (cri-tools) from upstream
+curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${ARCH}.tar.gz" \
+  | sudo tar -C /usr/local/bin -xz crictl
+
 
 # Configure containerd (SystemdCgroup=true, disabled_plugins=[])
 log "Configuring containerd (SystemdCgroup=true)"
+sudo systemctl start containerd && sudo systemctl stop containerd # This pre-start in theory is not needed... but looks like is not unable to start with custom configuration
 sudo mkdir -p /etc/containerd
 sudo containerd config default | sudo tee /etc/containerd/config.toml >/dev/null
 sudo sed -i 's/^disabled_plugins.*/disabled_plugins = \[\]/' /etc/containerd/config.toml || true
 sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml || true
+sudo systemctl daemon-reload
 sudo systemctl enable --now containerd
 
 # crictl talks to containerd
@@ -74,11 +83,11 @@ debug: false
 EOF
 
 # 4) Add ONLY Kubernetes v1.28 repo + pin
-log "Adding Kubernetes ${K8S_MAJOR_MINOR}.x repo & pinning"
+log "Adding Kubernetes ${K8S_MAJOR}.x repo & pinning"
 sudo rm -f /etc/apt/sources.list.d/*kubernetes* /etc/apt/sources.list.d/*pkgs.k8s.io* || true
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v${K8S_MAJOR_MINOR}/deb/Release.key \
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v${K8S_MAJOR}/deb/Release.key \
  | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v${K8S_MAJOR_MINOR}/deb/ /" \
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v${K8S_MAJOR}/deb/ /" \
  | sudo tee /etc/apt/sources.list.d/kubernetes.list >/dev/null
 
 sudo tee /etc/apt/preferences.d/kubernetes >/dev/null <<EOF
@@ -130,6 +139,7 @@ fi
 if ! echo "$JOIN_CMD" | grep -q -- '--v='; then
   JOIN_CMD="$JOIN_CMD --v=5"
 fi
+sudo systemctl daemon-reload && sudo systemctl restart containerd # Ensure all the configurations are updated and running in all the containers
 
 # shellcheck disable=SC2086
 sudo $JOIN_CMD

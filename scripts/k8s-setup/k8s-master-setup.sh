@@ -2,10 +2,14 @@
 set -euo pipefail
 
 # ===== Config you may tweak =====
-K8S_MAJOR_MINOR="1.28"
-K8S_VERSION_PIN="${K8S_MAJOR_MINOR}.*"      # pin family
-POD_CIDR="10.244.0.0/16"                    # Weave is fine with this
-USE_WEAVE="true"                            # set to "false" if you want to apply your own CNI later
+K8S_MAJOR="1.28"
+K8S_MAJOR_MINOR="${K8S_MAJOR}.15"     # check for the last patch version for your system using `kubeadm config images list --kubernetes-version stable`
+K8S_VERSION_PIN="${K8S_MAJOR}.*"      # pin family
+POD_CIDR="10.244.0.0/16"              # Weave is fine with this
+USE_WEAVE="true"                      # set to "false" if you want to apply your own CNI later
+CRICTL_VERSION="v{$K8S_MAJOR}.0"      # crictl version should be compatible with $K8S_MAJOR
+ARCH="$(dpkg --print-architecture)"   # architecture of K8S master and worker nodes to download dependencies
+K8S_SINGLE_NODE="false"               # enable for testing purposes in case you prefer to run single node configuration
 # =================================
 
 log() { printf '\n\033[1;32m[MASTER]\033[0m %s\n' "$*"; }
@@ -51,26 +55,23 @@ sudo mkdir -p /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
  | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
   | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
 fi
 
 sudo apt update -y
 sudo apt install -y containerd.io
 # Install crictl (cri-tools) from upstream
-CRICTL_VERSION="v1.28.0"
-ARCH="$(dpkg --print-architecture)"
 curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${ARCH}.tar.gz" \
   | sudo tar -C /usr/local/bin -xz crictl
 
 
 # 5) Configure containerd (SystemdCgroup=true, disabled_plugins=[])
 log "Configuring containerd (SystemdCgroup=true)"
+sudo systemctl start containerd && sudo systemctl stop containerd # This pre-start in theory is not needed... but looks like is not unable to start with custom configuration
 sudo mkdir -p /etc/containerd
 sudo containerd config default | sudo tee /etc/containerd/config.toml >/dev/null
 sudo sed -i 's/^disabled_plugins.*/disabled_plugins = \[\]/' /etc/containerd/config.toml || true
-sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml || true
-sudo systemctl enable --now containerd
 
 # crictl talks to containerd
 cat <<'EOF' | sudo tee /etc/crictl.yaml >/dev/null
@@ -81,11 +82,11 @@ debug: false
 EOF
 
 # 6) Add ONLY Kubernetes v1.28 repo + pin
-log "Adding Kubernetes ${K8S_MAJOR_MINOR}.x repo & pinning"
+log "Adding Kubernetes ${K8S_MAJOR}.x repo & pinning"
 sudo rm -f /etc/apt/sources.list.d/*kubernetes* /etc/apt/sources.list.d/*pkgs.k8s.io* || true
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v${K8S_MAJOR_MINOR}/deb/Release.key \
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v${K8S_MAJOR}/deb/Release.key \
  | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v${K8S_MAJOR_MINOR}/deb/ /" \
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v${K8S_MAJOR}/deb/ /" \
  | sudo tee /etc/apt/sources.list.d/kubernetes.list >/dev/null
 
 sudo tee /etc/apt/preferences.d/kubernetes >/dev/null <<EOF
@@ -106,15 +107,17 @@ sudo umount -R /var/lib/kubelet 2>/dev/null || true
 sudo rm -rf /var/lib/etcd /var/lib/kubelet/* /etc/cni/net.d /var/lib/cni || true
 
 # 8) Enable kubelet (it'll wait for join/init)
+log "Enable kubelet service"
 sudo systemctl enable --now kubelet
 
 # 9) Init control-plane (explicit CRI socket)
 log "Initializing control-plane"
 sudo kubeadm init \
-  --kubernetes-version "v${K8S_MAJOR_MINOR}.15" \
+  --kubernetes-version "v${K8S_MAJOR_MINOR}" \
   --cri-socket unix:///run/containerd/containerd.sock \
   --pod-network-cidr "${POD_CIDR}" \
   --v=5
+sudo systemctl daemon-reload && sudo systemctl restart containerd # Ensure all the configurations are updated and running in all the containers
 
 # 10) Kubeconfig for current user
 log "Setting kubeconfig for current user"
