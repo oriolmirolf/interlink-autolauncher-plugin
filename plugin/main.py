@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException, Body, Query
+from fastapi import FastAPI, HTTPException, Body, Request, Query
 from fastapi.responses import PlainTextResponse
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 import os, yaml
 import interlink
+import json
 
 from plugin.provider_autolauncher import AutolauncherProvider
 
@@ -32,10 +33,46 @@ def status_post(pods: List[interlink.PodRequest] = Body(...)) -> List[interlink.
     return provider.get_status(pods or [])
 
 @app.post("/create")
-def create_pods(pods: List[interlink.Pod] = Body(...)) -> List[interlink.CreateStruct]:
+async def create_pods(request: Request):
     try:
-        return provider.create_pod(pods)
+        body_bytes = await request.body()
+        data = json.loads(body_bytes)
+        print(f"DEBUG: Raw payload type: {type(data)}")
+
+        # Flatten logic: If we received a list of lists, flatten it.
+        pods_to_create = []
+
+        if isinstance(data, dict):
+            pods_to_create.append(data)
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, list):
+                    # Nested list? Flatten it.
+                    pods_to_create.extend(item)
+                else:
+                    pods_to_create.append(item)
+
+        results = []
+        for pod in pods_to_create:
+             print(f"DEBUG: Processing pod type: {type(pod)}")
+
+             # Final safety check
+             if not isinstance(pod, dict):
+                 print(f"WARNING: Skipping non-dict item: {pod}")
+                 continue
+
+             provider.create(pod)
+
+             # Mock success
+             uid = pod.get("pod", {}).get("metadata", {}).get("uid", "")
+             results.append({"PodUID": uid, "State": "Running"})
+
+        return results
+
     except Exception as ex:
+        import traceback
+        traceback.print_exc()
+        print(f"ERROR: {ex}")
         raise HTTPException(status_code=500, detail=str(ex))
 
 @app.post("/delete")
