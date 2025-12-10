@@ -2,7 +2,7 @@ import logging
 import os
 import json
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 import uvicorn
 import interlink
 from plugin.provider_autolauncher import AutolauncherProvider
