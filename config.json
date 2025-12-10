@@ -1,0 +1,14 @@
+{
+  "hpc": {
+    "user": "bsc449422",
+    "login_host": "amdlogin1.bsc.es",
+    "remote_base_dir": "/home/bsc/bsc449422/autolauncher-jobs",
+    "autolauncher_path": "~/.autolauncher/autolauncher.py",
+    "cluster": "amd",
+    "singularity_version": "3.6.4"
+  },
+  "ssh": {
+    "key_path": "/home/ubuntu/.ssh/id_rsa",
+    "extra_args": "-o StrictHostKeyChecking=accept-new"
+  }
+}
