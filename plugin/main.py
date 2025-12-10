@@ -43,30 +43,18 @@ async def delete_pod(pod: dict):
 
 @app.get("/getLogs")
 async def get_logs(request: Request):
-    """
-    Robust handler: Checks Query Params FIRST, then JSON Body fallback.
-    """
     try:
-        # 1. Try Query Parameters (standard GET)
+        # Check Query Params first, then Body
         params = dict(request.query_params)
-        
-        # 2. If empty, try JSON Body (non-standard GET)
         if not params:
             try:
                 body = await request.json()
-                if body:
-                    params = body
-            except:
-                pass # Body might be empty or invalid JSON, ignore
-        
-        # Debug log to see exactly what we got
-        logger.info(f"GetLogs processing params: {params}")
+                if body: params = body
+            except: pass
 
-        # Find UID case-insensitively
         uid = params.get("PodUID") or params.get("podUID") or params.get("uid") or params.get("pod_uid")
         
         if not uid:
-            logger.error(f"Missing UID. Raw Params: {params}")
             raise HTTPException(status_code=400, detail=f"Missing PodUID. Received: {list(params.keys())}")
 
         opts = interlink.LogOpts(
@@ -79,7 +67,9 @@ async def get_logs(request: Request):
         class SimpleLogRequest:
             def __init__(self, u, o): self.pod_uid = u; self.Opts = o
         
-        return provider.get_logs(SimpleLogRequest(uid, opts))
+        # KEY CHANGE: Return as Raw Text, not JSON
+        logs = provider.get_logs(SimpleLogRequest(uid, opts))
+        return Response(content=logs, media_type="text/plain")
         
     except Exception as e:
         logger.error(f"GetLogs failed: {e}", exc_info=True)
