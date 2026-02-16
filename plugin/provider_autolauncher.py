@@ -50,7 +50,7 @@ class AutolauncherProvider(interlink.provider.Provider):
 
         self.ssh = SSHClient(
             user=hpc.get("user", ""),
-            host=hpc.get("login_host", "amdlogin1.bsc.es"),
+            host=hpc.get("login_host", "alogin1.bsc.es"),
             extra_args=ssh_conf.get("extra_args", "-o StrictHostKeyChecking=accept-new"),
             key_path=ssh_conf.get("key_path")
         )
@@ -59,7 +59,7 @@ class AutolauncherProvider(interlink.provider.Provider):
             remote_base_dir=hpc.get("remote_base_dir", "/gpfs/projects/bsc70/INTERLINK/jobs"),
             autolauncher_path=hpc.get("autolauncher_path", "~/.autolauncher/autolauncher.py")
         )
-        self.cluster = hpc.get("cluster", "amd")
+        self.cluster = hpc.get("cluster", "mn5")
         self.singularity_version = hpc.get("singularity_version", "3.6.4")
         self.extra_bindings = hpc.get("extra_bindings", [])
         self.image_map = hpc.get("image_map", {}) or {}

@@ -29,10 +29,10 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 rsync -a --delete "${REPO_DIR}/plugin" "${INSTALL_DIR}/"
 
 # --- Ask for AMD-CTE credentials (copies SSH key, uploads autolauncher.py) ---
-read -rp "BSC AMD-CTE username: " BSC_USER
-read -rs -p "Password for ${BSC_USER}@amdlogin1.bsc.es: " BSC_PASS; echo
-read -rp "Remote GPFS jobs base dir [/gpfs/projects/bsc70/<your_group>/interlink/jobs]: " HPC_BASE
-HPC_BASE="${HPC_BASE:-/gpfs/projects/bsc70/<your_group>/interlink/jobs}"
+read -rp "BSC MN5 username: " BSC_USER
+read -rs -p "Password for ${BSC_USER}@alogin1.bsc.es: " BSC_PASS; echo
+read -rp "Remote GPFS jobs base dir [/gpfs/projects/bsc70/INTERLINK/jobs]: " HPC_BASE
+HPC_BASE="${HPC_BASE:-/gpfs/projects/bsc70/INTERLINK/jobs}"
 read -rp "Use apptainer instead of singularity? [y/N]: " USE_APPT
 if [[ "${USE_APPT,,}" == "y" ]]; then
   SING_BIN="apptainer"; MOD_INIT="module load rocm apptainer"
@@ -45,14 +45,14 @@ sudo -u "${PLUGIN_USER}" bash -lc '[[ -f ~/.ssh/id_rsa ]] || ssh-keygen -t rsa -
 sudo -u "${PLUGIN_USER}" sshpass -p "${BSC_PASS}" \
   ssh-copy-id -i "/home/${PLUGIN_USER}/.ssh/id_rsa.pub" \
   -o StrictHostKeyChecking=accept-new \
-  "${BSC_USER}@amdlogin1.bsc.es"
+  "${BSC_USER}@alogin1.bsc.es"
 
 # Upload patched autolauncher (optional but recommended)
 sudo -u "${PLUGIN_USER}" ssh -o StrictHostKeyChecking=accept-new \
-  "${BSC_USER}@amdlogin1.bsc.es" 'mkdir -p ~/.autolauncher'
+  "${BSC_USER}@alogin1.bsc.es" 'mkdir -p ~/.autolauncher'
 sudo -u "${PLUGIN_USER}" scp -o StrictHostKeyChecking=accept-new \
   "${INSTALL_DIR}/plugin/hpc/autolauncher.py" \
-  "${BSC_USER}@amdlogin1.bsc.es:~/.autolauncher/autolauncher.py" || true
+  "${BSC_USER}@alogin1.bsc.es:~/.autolauncher/autolauncher.py" || true
 
 # --- Python venv + deps ---
 python3 -m venv "${INSTALL_DIR}/.venv"
@@ -69,9 +69,9 @@ plugin:
   state_path: "~/.interlink/autolauncher-plugin-state.json"
 
 hpc:
-  login_host: "amdlogin1.bsc.es"
+  login_host: "alogin1.bsc.es"
   user: "${BSC_USER}"
-  cluster: "amd"
+  cluster: "mn5"
   autolauncher_path: "~/.autolauncher/autolauncher.py"
   remote_base_dir: "${HPC_BASE}"
   singularity_version: "3.6.4"
