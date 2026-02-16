@@ -105,7 +105,45 @@ class MiniNLauncherWriter(LauncherWriter):
     def launcher_headers(self): return ['#!/bin/bash']
     def launcher_command(self): return []
 
-LAUNCHER_WRITERS = {'mn4': MNLauncherWriter, 'p9': P9LauncherWriter, 'local': MiniNLauncherWriter, 'amd': AMDLauncher}
+class MN5Launcher(MNLauncherWriter):
+    def extra_headers(self):
+        gres = int(self.configuration.get('gres') or 0)
+        headers = []
+        if gres > 0:
+            headers.append('#SBATCH --gres=gpu:' + str(gres))
+        if self.configuration.get('highmem'):
+            headers.append('#SBATCH --constraint=highmem')
+        return headers
+
+    def get_extra_singularity_flags(self):
+        gres = int(self.configuration.get('gres') or 0)
+        return '--nv' if gres > 0 else ''
+
+    def launcher_command(self):
+        # Removed AMD 'rocm' module load
+        command = ['export PYTHONPATH=src', 'unset TMPDIR']
+        SINGULARITY_PATH = 'apptainer' # MN5 relies heavily on apptainer
+        SINGULARITY_BINDINGS = ['/gpfs/projects/bsc70/hpai/storage/data/:/gpfs/projects/bsc70/hpai/storage/data/']
+        if 'bindings_list' in self.configuration:
+            SINGULARITY_BINDINGS += self.configuration['bindings_list']
+        SINGULARITY_BINDINGS_CMD = ' '.join("-B {}".format(bind) for bind in SINGULARITY_BINDINGS)
+        
+        SINGULARITY_IMAGE = self.configuration['containerdir']
+        extra_flags = self.get_extra_singularity_flags()
+
+        SINGULARITY_COMMAND = (
+            SINGULARITY_PATH + " exec " + extra_flags + " \\\n" +
+            " " + SINGULARITY_BINDINGS_CMD + " \\\n" +
+            " " + SINGULARITY_IMAGE + " \\\n" +
+            " bash -c \"" + self.python_command() + "\""
+        )
+
+        command.append(SINGULARITY_COMMAND)
+        root.info('**LAUNCHING COMMAND** %s', str(command))
+        return command
+
+LAUNCHER_WRITERS = {'mn4': MNLauncherWriter, 'p9': P9LauncherWriter, 'local': MiniNLauncherWriter, 'amd': AMDLauncher, 'mn5': MN5Launcher}
+
 
 def get_job_launcher_name(params):
     num = 0

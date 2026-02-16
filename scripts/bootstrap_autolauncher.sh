@@ -35,9 +35,9 @@ read -rp "Remote GPFS jobs base dir [/gpfs/projects/bsc70/INTERLINK/jobs]: " HPC
 HPC_BASE="${HPC_BASE:-/gpfs/projects/bsc70/INTERLINK/jobs}"
 read -rp "Use apptainer instead of singularity? [y/N]: " USE_APPT
 if [[ "${USE_APPT,,}" == "y" ]]; then
-  SING_BIN="apptainer"; MOD_INIT="module load rocm apptainer"
+  SING_BIN="apptainer"; MOD_INIT="module load apptainer"
 else
-  SING_BIN="singularity"; MOD_INIT="module load rocm singularity"
+  SING_BIN="singularity"; MOD_INIT="module load singularity"
 fi
 
 # Generate SSH key if missing and push to BSC
